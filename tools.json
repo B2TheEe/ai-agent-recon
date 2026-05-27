@@ -1,0 +1,16 @@
+tools = [
+  {
+        "name": "web_search",
+        "description": "Searches the web for current information on a topic.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                }
+            },
+            "required": ["query"]
+        }
+    },
+]
