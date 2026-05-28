@@ -1,5 +1,5 @@
 tools = [
-  {
+    {
         "name": "web_search",
         "description": "Searches the web for current information on a topic.",
         "input_schema": {
@@ -13,4 +13,22 @@ tools = [
             "required": ["query"]
         }
     },
+    {
+        "name": "write_file",
+        "description": "Writes content to a file in the output directory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "File path relative to the output directory"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to write"
+                }
+            },
+            "required": ["file_path", "content"]
+        }
+    }
 ]
