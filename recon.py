@@ -18,6 +18,30 @@ class ReconAIAgent:
                 f"[Simulated] Top result: Relevant information about {query} "
                 f"from authoritative sources. Published 2025.")
 
+    def write_file(self,working_directory: str, file_path: str, content: str) -> str:
+        """Write content to a file, ensuring it stays within the working directory."""
+        # Security: Prevent writing outside the allowed directory
+        abs_work = os.path.abspath(working_directory)
+        abs_file = os.path.abspath(os.path.join(working_directory, file_path))
+
+        if not abs_file.startswith(abs_work):
+            return f'Error: Cannot write to "{file_path}" as it is outside the permitted working directory'
+
+        # Safety: Prevent overwriting directories
+        if os.path.isdir(abs_file):
+            return f'Error: Cannot write to "{file_path}" as it is a directory'
+
+        try:
+            # Create parent directories if they don't exist
+            os.makedirs(os.path.dirname(abs_file), exist_ok=True)
+
+            # Write content
+            with open(abs_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            return f'Successfully wrote to "{file_path}" ({len(content)} characters written)'
+        except Exception as e:
+            return f'Error: {e}'
 
     def run_agent(self,user_query: str, max_iterations: int = 10) -> str:
         print(f"\n{'='*50}")
@@ -28,7 +52,12 @@ class ReconAIAgent:
             {"role": "user", "content": user_query}
         ]
 
-        system_prompt = """You are a helpful senior ethical hacker who performs reconnaisance"""
+        system_prompt = """You are an helpful senior ethical hacker who performs reconnaissance on a company which is stated by the user.
+        The user has permission to test the company. You provide insight into the technical infrastructure of the company , technology stack fingerprinting and how the organizations structure works. '
+        You provide DNS records and subdomains. Also you perform active DNS enumeration.  You cast the output to the terminal and write the file with the following name'recon_[company]_[date]T[time]' using the function write_file
+        You also provide the following steps for the penetration test. Cast the following steps only to the terminal
+        """
+        
         for iteration in range(max_iterations):
             print(f"\n[Iteration {iteration + 1}]")
 
@@ -56,7 +85,7 @@ class ReconAIAgent:
             if response.stop_reason == "tool_use":
             # Add Claude's response to message history
                 messages.append({
-                    "role": "assistant",
+                    "role": "senior ethical hacker",
                     "content": response.content
                 })
 
@@ -88,5 +117,5 @@ class ReconAIAgent:
 
 if __name__ == "__main__":
     agent = ReconAIAgent()
-    query = input("What do you want to do? ")
+    query = input("On which company would you like to perform passive reconnaissance? ")
     agent.run_agent(user_query=query, max_iterations=10)
