@@ -161,5 +161,5 @@ class ReconAIAgent(
 if __name__ == "__main__":
     agent = ReconAIAgent()
     query = input("On which company would you like to perform "
-                  "passive reconnaissance? ")
+                  "reconnaissance? ")
     agent.run_agent(user_query=query, max_iterations=10)
