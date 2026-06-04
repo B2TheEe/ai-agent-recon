@@ -1,60 +1,18 @@
+import json
 import os
 import subprocess
 import anthropic
+import dns.resolver
 import whois as whois_lib
 from ddgs import DDGS
 from dotenv import load_dotenv
 from prompts import system_prompt
 load_dotenv()
 
-tools = [
-    {
-        "name": "web_search",
-        "description": "Searches the web for current information on a topic.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
-                }
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "whois_lookup",
-        "description": "Performs a WHOIS lookup for a domain. Returns registrar, registration/expiry dates, nameservers, and registrant info when available. Use this for passive reconnaissance once a target domain is known.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "domain": {
-                    "type": "string",
-                    "description": "The domain to look up, e.g. 'example.com' (no scheme, no path)"
-                }
-            },
-            "required": ["domain"]
-        }
-    },
-    {
-        "name": "write_file",
-        "description": "Writes content to a file in the output directory.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "File path relative to the output directory"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Content to write"
-                }
-            },
-            "required": ["file_path", "content"]
-        }
-    }
-]
+# Single source of truth for tool schemas — loaded from tools.json
+_TOOLS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools.json")
+with open(_TOOLS_PATH, "r", encoding="utf-8") as _f:
+    tools = json.load(_f)
 
 class ReconAIAgent:
     def __init__(self):
@@ -119,6 +77,41 @@ class ReconAIAgent:
         except Exception as e:
             return f"Error: {primary_err}; system whois exception: {e}"
 
+    def dns_lookup(self, domain: str, record_types: list | None = None) -> str:
+        # Normalize input
+        domain = domain.strip().lower()
+        for prefix in ("https://", "http://"):
+            if domain.startswith(prefix):
+                domain = domain[len(prefix):]
+        domain = domain.split("/")[0].split("?")[0]
+
+        if not record_types:
+            record_types = ["A", "AAAA", "MX", "NS", "TXT", "SOA", "CNAME"]
+
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 5
+        resolver.lifetime = 10
+
+        lines = [f"DNS enumeration for {domain}"]
+        for rtype in record_types:
+            rtype_upper = rtype.upper()
+            try:
+                answers = resolver.resolve(domain, rtype_upper)
+                lines.append(f"  {rtype_upper}:")
+                for rdata in answers:
+                    lines.append(f"    {rdata.to_text()}")
+            except dns.resolver.NoAnswer:
+                lines.append(f"  {rtype_upper}: (no records)")
+            except dns.resolver.NXDOMAIN:
+                return f"DNS enumeration for {domain}\n  Error: NXDOMAIN — domain does not exist"
+            except dns.resolver.NoNameservers:
+                lines.append(f"  {rtype_upper}: (no nameservers responded)")
+            except dns.exception.Timeout:
+                lines.append(f"  {rtype_upper}: (timeout)")
+            except Exception as e:
+                lines.append(f"  {rtype_upper}: error: {e}")
+        return "\n".join(lines)
+
     def write_file(self, file_path: str, content: str) -> str:
         abs_work = os.path.abspath(self.working_directory)
         abs_file = os.path.abspath(os.path.join(self.working_directory, file_path))
@@ -144,6 +137,8 @@ class ReconAIAgent:
             return self.web_search(**inputs)
         if name == "whois_lookup":
             return self.whois_lookup(**inputs)
+        if name == "dns_lookup":
+            return self.dns_lookup(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

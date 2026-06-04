@@ -1,4 +1,5 @@
 anthropic
 ddgs
+dnspython
 python-dotenv
 python-whois

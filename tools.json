@@ -1,4 +1,4 @@
-tools = [
+[
     {
         "name": "web_search",
         "description": "Searches the web for current information on a topic.",
@@ -22,6 +22,25 @@ tools = [
                 "domain": {
                     "type": "string",
                     "description": "The domain to look up, e.g. 'example.com' (no scheme, no path)"
+                }
+            },
+            "required": ["domain"]
+        }
+    },
+    {
+        "name": "dns_lookup",
+        "description": "Performs DNS enumeration on a domain. Queries A, AAAA, MX, NS, TXT, SOA, and CNAME records by default. Use this for active DNS enumeration after identifying a target domain.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "The domain to enumerate, e.g. 'example.com' (no scheme, no path)"
+                },
+                "record_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of record types to query. Defaults to ['A','AAAA','MX','NS','TXT','SOA','CNAME']. Valid types include any DNS RR type supported by dnspython (e.g. CAA, SRV, PTR, DNSKEY)."
                 }
             },
             "required": ["domain"]
