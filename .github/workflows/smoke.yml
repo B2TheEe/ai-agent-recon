@@ -1,0 +1,56 @@
+name: smoke
+
+# Runs the end-to-end tool-layer integration check.
+# No LLM, no API key required — purely exercises the tools.
+#
+# Triggers:
+#   - manual via the Actions tab (workflow_dispatch)
+#   - weekly on Monday 06:00 UTC, so dependency drift surfaces early
+#
+# Passive lookups hit example.com; the only ACTIVE step (port_scan)
+# targets scanme.nmap.org, which Nmap explicitly publishes as a public
+# scan target. Do NOT change SMOKE_SCAN_HOST to a host you don't own.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system whois (fallback for python-whois)
+        run: sudo apt-get update && sudo apt-get install -y whois
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run smoke test
+        env:
+          SMOKE_DOMAIN: example.com
+          SMOKE_SCAN_HOST: scanme.nmap.org
+          OUTPUT_DIR: output
+        run: python smoke_test.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: output/
+          if-no-files-found: warn
+          retention-days: 14
