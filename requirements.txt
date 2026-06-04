@@ -1,0 +1,4 @@
+anthropic
+ddgs
+python-dotenv
+python-whois

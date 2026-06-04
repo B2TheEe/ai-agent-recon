@@ -1,5 +1,7 @@
 import os
+import subprocess
 import anthropic
+import whois as whois_lib
 from ddgs import DDGS
 from dotenv import load_dotenv
 from prompts import system_prompt
@@ -18,6 +20,20 @@ tools = [
                 }
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "whois_lookup",
+        "description": "Performs a WHOIS lookup for a domain. Returns registrar, registration/expiry dates, nameservers, and registrant info when available. Use this for passive reconnaissance once a target domain is known.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "The domain to look up, e.g. 'example.com' (no scheme, no path)"
+                }
+            },
+            "required": ["domain"]
         }
     },
     {
@@ -52,6 +68,57 @@ class ReconAIAgent:
         print(results)
         return str(results)
 
+    def whois_lookup(self, domain: str) -> str:
+        # Normalize: strip scheme/path if the model passed a URL
+        domain = domain.strip().lower()
+        for prefix in ("https://", "http://"):
+            if domain.startswith(prefix):
+                domain = domain[len(prefix):]
+        domain = domain.split("/")[0].split("?")[0]
+
+        # Primary: python-whois library
+        try:
+            w = whois_lib.whois(domain)
+            if w and (w.domain_name or w.registrar or w.creation_date):
+                fields = [
+                    ("Domain", w.domain_name),
+                    ("Registrar", w.registrar),
+                    ("Whois server", w.whois_server),
+                    ("Creation date", w.creation_date),
+                    ("Expiration date", w.expiration_date),
+                    ("Updated date", w.updated_date),
+                    ("Name servers", w.name_servers),
+                    ("Status", w.status),
+                    ("Emails", w.emails),
+                    ("DNSSEC", w.dnssec),
+                    ("Registrant name", w.name),
+                    ("Registrant org", w.org),
+                    ("Country", w.country),
+                ]
+                lines = [f"WHOIS for {domain} (via python-whois)"]
+                for label, value in fields:
+                    if value:
+                        lines.append(f"  {label}: {value}")
+                return "\n".join(lines)
+        except Exception as e:
+            primary_err = f"python-whois failed: {e}"
+        else:
+            primary_err = "python-whois returned no usable data"
+
+        # Fallback: system `whois` CLI (e.g. handy for .nl / .eu)
+        try:
+            result = subprocess.run(
+                ["whois", domain],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return f"WHOIS for {domain} (via system whois)\n{result.stdout.strip()}"
+            return f"Error: {primary_err}; system whois exit={result.returncode} stderr={result.stderr.strip()}"
+        except FileNotFoundError:
+            return f"Error: {primary_err}; system 'whois' command not installed (try: sudo apt install whois)"
+        except Exception as e:
+            return f"Error: {primary_err}; system whois exception: {e}"
+
     def write_file(self, file_path: str, content: str) -> str:
         abs_work = os.path.abspath(self.working_directory)
         abs_file = os.path.abspath(os.path.join(self.working_directory, file_path))
@@ -75,6 +142,8 @@ class ReconAIAgent:
     def execute_tool(self, name: str, inputs: dict) -> str:
         if name == "web_search":
             return self.web_search(**inputs)
+        if name == "whois_lookup":
+            return self.whois_lookup(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

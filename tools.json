@@ -14,6 +14,20 @@ tools = [
         }
     },
     {
+        "name": "whois_lookup",
+        "description": "Performs a WHOIS lookup for a domain. Returns registrar, registration/expiry dates, nameservers, and registrant info when available. Use this for passive reconnaissance once a target domain is known.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "The domain to look up, e.g. 'example.com' (no scheme, no path)"
+                }
+            },
+            "required": ["domain"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {
