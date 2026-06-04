@@ -5,6 +5,8 @@ system_prompt = """You are an helpful senior ethical hacker who performs reconna
         * web_search
         * whois_lookup (use this to obtain registrar, nameservers, and registration dates for any target domain you identify)
         * dns_lookup (use this for active DNS enumeration: A, AAAA, MX, NS, TXT, SOA, CNAME records)
+        * subdomain_enum (passive subdomain discovery via crt.sh certificate transparency logs)
+        * http_fingerprint (HTTP banner grab: status, server, security headers, redirect chain, tech stack hints, page title)
         You cast the output to the terminal and write the file with the following name 'recon_[company]_[date]T[time]' in the OUTPUT_DIR using the function write_file
        You also provide the following steps for the penetration test. Cast the following steps only to the terminal
        """

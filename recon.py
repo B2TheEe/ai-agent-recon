@@ -1,8 +1,10 @@
 import json
 import os
+import re
 import subprocess
 import anthropic
 import dns.resolver
+import httpx
 import whois as whois_lib
 from ddgs import DDGS
 from dotenv import load_dotenv
@@ -112,6 +114,118 @@ class ReconAIAgent:
                 lines.append(f"  {rtype_upper}: error: {e}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _normalize_domain(domain: str) -> str:
+        domain = domain.strip().lower()
+        for prefix in ("https://", "http://"):
+            if domain.startswith(prefix):
+                domain = domain[len(prefix):]
+        return domain.split("/")[0].split("?")[0]
+
+    def subdomain_enum(self, domain: str, limit: int = 100) -> str:
+        domain = self._normalize_domain(domain)
+        url = f"https://crt.sh/?q=%25.{domain}&output=json"
+        try:
+            r = httpx.get(url, timeout=20.0, follow_redirects=True,
+                          headers={"User-Agent": "ai-agent-recon/0.1"})
+            if r.status_code != 200:
+                return f"Error: crt.sh returned HTTP {r.status_code}"
+            data = r.json()
+        except json.JSONDecodeError:
+            return "Error: crt.sh returned non-JSON (likely rate limit or empty result)"
+        except httpx.HTTPError as e:
+            return f"Error: HTTP request to crt.sh failed: {e}"
+
+        subdomains = set()
+        for entry in data:
+            name = entry.get("name_value", "")
+            for sub in name.split("\n"):
+                sub = sub.strip().lower().lstrip("*.")
+                if sub and (sub == domain or sub.endswith("." + domain)):
+                    subdomains.add(sub)
+
+        if not subdomains:
+            return f"Subdomain enumeration for {domain}\n  (no subdomains found via crt.sh)"
+
+        sorted_subs = sorted(subdomains)
+        truncated = len(sorted_subs) > limit
+        shown = sorted_subs[:limit]
+        lines = [f"Subdomain enumeration for {domain} (crt.sh)",
+                 f"  Found: {len(sorted_subs)} unique"
+                 + (f", showing first {limit}" if truncated else "")]
+        for s in shown:
+            lines.append(f"    {s}")
+        return "\n".join(lines)
+
+    def http_fingerprint(self, target: str) -> str:
+        if not target.startswith(("http://", "https://")):
+            target = "https://" + target
+
+        interesting_headers = [
+            "server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version",
+            "x-generator", "x-drupal-cache", "x-pingback", "via", "cf-ray",
+            "content-type", "strict-transport-security", "content-security-policy",
+            "x-frame-options", "x-content-type-options", "referrer-policy",
+            "permissions-policy",
+        ]
+
+        try:
+            with httpx.Client(timeout=15.0, follow_redirects=True,
+                              headers={"User-Agent": "ai-agent-recon/0.1"},
+                              verify=True) as client:
+                r = client.get(target)
+        except httpx.HTTPError as e:
+            return f"Error: HTTP request failed: {e}"
+
+        lines = [f"HTTP fingerprint for {target}",
+                 f"  Final URL: {r.url}",
+                 f"  Status: {r.status_code} {r.reason_phrase}",
+                 f"  HTTP version: {r.http_version}"]
+
+        if r.history:
+            lines.append("  Redirect chain:")
+            for hop in r.history:
+                lines.append(f"    {hop.status_code} -> {hop.headers.get('location', '?')}")
+
+        lines.append("  Headers of interest:")
+        any_header = False
+        for h in interesting_headers:
+            if h in r.headers:
+                lines.append(f"    {h}: {r.headers[h]}")
+                any_header = True
+        if not any_header:
+            lines.append("    (none of the typical fingerprint headers were set)")
+
+        cookies = [c.name for c in r.cookies.jar]
+        if cookies:
+            lines.append(f"  Cookies set: {', '.join(cookies)}")
+
+        # Naive tech hints from cookies + headers
+        hints = []
+        cookie_blob = " ".join(cookies).lower()
+        if "phpsessid" in cookie_blob: hints.append("PHP")
+        if "asp.net" in cookie_blob or "x-aspnet-version" in r.headers: hints.append("ASP.NET")
+        if "jsessionid" in cookie_blob: hints.append("Java (Servlet/JSP)")
+        if "laravel_session" in cookie_blob: hints.append("Laravel")
+        if "django" in cookie_blob: hints.append("Django")
+        if "_rails" in cookie_blob or "rack.session" in cookie_blob: hints.append("Ruby on Rails")
+        server = r.headers.get("server", "").lower()
+        if "cloudflare" in server or "cf-ray" in r.headers: hints.append("Cloudflare (CDN/WAF)")
+        if "nginx" in server: hints.append("nginx")
+        if "apache" in server: hints.append("Apache httpd")
+        if "iis" in server: hints.append("Microsoft IIS")
+        if hints:
+            lines.append(f"  Tech hints: {', '.join(sorted(set(hints)))}")
+
+        # Title
+        if "text/html" in r.headers.get("content-type", "").lower():
+            m = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.IGNORECASE | re.DOTALL)
+            if m:
+                title = re.sub(r"\s+", " ", m.group(1)).strip()[:200]
+                lines.append(f"  Title: {title}")
+
+        return "\n".join(lines)
+
     def write_file(self, file_path: str, content: str) -> str:
         abs_work = os.path.abspath(self.working_directory)
         abs_file = os.path.abspath(os.path.join(self.working_directory, file_path))
@@ -139,6 +253,10 @@ class ReconAIAgent:
             return self.whois_lookup(**inputs)
         if name == "dns_lookup":
             return self.dns_lookup(**inputs)
+        if name == "subdomain_enum":
+            return self.subdomain_enum(**inputs)
+        if name == "http_fingerprint":
+            return self.http_fingerprint(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

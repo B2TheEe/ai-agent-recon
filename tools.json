@@ -47,6 +47,38 @@
         }
     },
     {
+        "name": "subdomain_enum",
+        "description": "Enumerates subdomains for a target domain by querying crt.sh (certificate transparency logs). Returns a deduplicated, sorted list. Passive reconnaissance — no traffic to the target.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Apex domain to enumerate, e.g. 'example.com'"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional max number of subdomains to return (default 100)"
+                }
+            },
+            "required": ["domain"]
+        }
+    },
+    {
+        "name": "http_fingerprint",
+        "description": "Performs HTTP fingerprinting on a URL or domain. Returns status, server, technology hints (X-Powered-By, Set-Cookie patterns), security headers, redirect chain, and the page title. Useful for tech-stack identification.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "URL or bare domain (https:// is added automatically if missing)"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {
