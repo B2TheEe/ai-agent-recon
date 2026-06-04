@@ -27,8 +27,20 @@ sudo apt install whois
 Single-agent loop built on Anthropic tool-use API:
 
 - `prompts.py` — system prompt defining agent persona and tool instructions
-- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `ssl_inspect`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, `service_version_probe`, `cve_lookup`, `recon_report`, `write_file`), entry point
+- `recon.py` — thin `ReconAIAgent` orchestrator: loads `tools.json`, runs the Anthropic agent loop, dispatches tool calls. Composes the tool mixins.
+- `tools/` — one module per tool family, each exposing a `*Mixin` class:
+  - `search.py` → `SearchMixin`        — web_search
+  - `whois_dns.py` → `WhoisDnsMixin`   — whois_lookup, dns_lookup, subdomain_enum
+  - `http.py` → `HttpMixin`            — http_fingerprint, ssl_inspect, directory_bruteforce, http_methods, vhost_discovery
+  - `tcp.py` → `TcpMixin`              — port_scan, service_version_probe
+  - `vuln.py` → `VulnMixin`            — cve_lookup
+  - `chain.py` → `ChainMixin`          — recon_report
+  - `files.py` → `FileMixin`           — write_file
+  - `utils.py` → `DomainNormalizerMixin` (shared base used by several mixins)
+  - `constants.py` — wordlists + TOP_100_TCP_PORTS
 - `tools.json` — Anthropic tool schemas (single source of truth, loaded at import time in `recon.py`)
+
+The mixin layout lets pytest patch `recon.httpx.get`, `recon.socket.gethostbyname`, etc. — the submodules import the same global module objects, so a single patch covers every caller.
 
 **Agent loop** (`run_agent`): sends user query → receives `tool_use` stop → dispatches tool → appends `tool_result` → loops until `end_turn`. Report written to `OUTPUT_DIR/recon_[company]_[date]T[time]`.
 

@@ -76,7 +76,17 @@ pytest tests/ -v
 ## Project layout
 
 ```
-recon.py            ReconAIAgent + agent loop + tool implementations
+recon.py            ReconAIAgent thin orchestrator + agent loop
+tools/              tool implementations split per family (mixin pattern)
+  ├ search.py        web_search
+  ├ whois_dns.py     whois_lookup, dns_lookup, subdomain_enum
+  ├ http.py          http_fingerprint, ssl_inspect, directory_bruteforce, http_methods, vhost_discovery
+  ├ tcp.py           port_scan, service_version_probe
+  ├ vuln.py          cve_lookup
+  ├ chain.py         recon_report
+  ├ files.py         write_file (sandboxed)
+  ├ utils.py         DomainNormalizerMixin (shared)
+  └ constants.py     wordlists, port lists
 tools.json          Anthropic tool schemas (single source of truth)
 prompts.py          system prompt
 smoke_test.py       end-to-end tool integration check
