@@ -79,6 +79,37 @@
         }
     },
     {
+        "name": "port_scan",
+        "description": "Async TCP port scan with optional banner grab. ACTIVE reconnaissance — sends real packets to the target. Defaults to the nmap top-100 TCP ports. Only use against hosts you have explicit permission to test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Hostname or IP to scan. Hostnames are resolved via system DNS."
+                },
+                "ports": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Optional explicit port list. If omitted, scans the nmap top-100 TCP ports."
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Per-port connect timeout in seconds (default 1.5)"
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "description": "Max concurrent connections (default 200)"
+                },
+                "banner": {
+                    "type": "boolean",
+                    "description": "Attempt a tiny banner read on open ports (default true)"
+                }
+            },
+            "required": ["host"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {

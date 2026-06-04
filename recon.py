@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import re
+import socket
 import subprocess
 import anthropic
 import dns.resolver
@@ -15,6 +17,19 @@ load_dotenv()
 _TOOLS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools.json")
 with open(_TOOLS_PATH, "r", encoding="utf-8") as _f:
     tools = json.load(_f)
+
+# nmap top-100 TCP ports (from nmap-services, ordered by frequency)
+TOP_100_TCP_PORTS = [
+    7, 9, 13, 21, 22, 23, 25, 26, 37, 53, 79, 80, 81, 88, 106, 110, 111, 113,
+    119, 135, 139, 143, 144, 179, 199, 389, 427, 443, 444, 445, 465, 513, 514,
+    515, 543, 544, 548, 554, 587, 631, 646, 873, 990, 993, 995, 1025, 1026,
+    1027, 1028, 1029, 1110, 1433, 1720, 1723, 1755, 1900, 2000, 2001, 2049,
+    2121, 2717, 3000, 3128, 3306, 3389, 3986, 4899, 5000, 5009, 5051, 5060,
+    5101, 5190, 5357, 5432, 5631, 5666, 5800, 5900, 6000, 6001, 6646, 7070,
+    8000, 8008, 8009, 8080, 8081, 8443, 8888, 9100, 9999, 10000, 32768, 49152,
+    49153, 49154, 49155, 49156, 49157,
+]
+
 
 class ReconAIAgent:
     def __init__(self):
@@ -226,6 +241,81 @@ class ReconAIAgent:
 
         return "\n".join(lines)
 
+    async def _scan_port(self, host: str, port: int, timeout: float,
+                         sem: asyncio.Semaphore, banner: bool):
+        async with sem:
+            try:
+                fut = asyncio.open_connection(host, port)
+                reader, writer = await asyncio.wait_for(fut, timeout=timeout)
+            except (asyncio.TimeoutError, OSError, ConnectionRefusedError):
+                return None
+
+            banner_text = ""
+            if banner:
+                try:
+                    # Some services (SSH, FTP, SMTP) speak first
+                    data = await asyncio.wait_for(reader.read(128), timeout=0.8)
+                    banner_text = data.decode("utf-8", errors="replace").strip()
+                except (asyncio.TimeoutError, OSError):
+                    banner_text = ""
+
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return (port, banner_text)
+
+    async def _run_scan(self, host: str, ports: list, timeout: float,
+                        concurrency: int, banner: bool):
+        sem = asyncio.Semaphore(concurrency)
+        tasks = [self._scan_port(host, p, timeout, sem, banner) for p in ports]
+        results = await asyncio.gather(*tasks)
+        return [r for r in results if r is not None]
+
+    def port_scan(self, host: str, ports: list | None = None,
+                  timeout: float = 1.5, concurrency: int = 200,
+                  banner: bool = True) -> str:
+        host = self._normalize_domain(host)
+        # Resolve once so we report what we actually scanned
+        try:
+            resolved = socket.gethostbyname(host)
+        except socket.gaierror as e:
+            return f"Error: DNS resolution for {host} failed: {e}"
+
+        if not ports:
+            ports = TOP_100_TCP_PORTS
+        ports = sorted(set(int(p) for p in ports if 1 <= int(p) <= 65535))
+
+        try:
+            open_ports = asyncio.run(
+                self._run_scan(host, ports, timeout, concurrency, banner)
+            )
+        except Exception as e:
+            return f"Error: scan failed: {e}"
+
+        lines = [f"TCP port scan for {host} ({resolved})",
+                 f"  Scanned: {len(ports)} ports, timeout={timeout}s, concurrency={concurrency}",
+                 f"  Open: {len(open_ports)}"]
+        if not open_ports:
+            lines.append("  (no open ports detected in scanned range)")
+        else:
+            for port, b in sorted(open_ports):
+                svc = ""
+                try:
+                    svc = socket.getservbyport(port, "tcp")
+                except OSError:
+                    pass
+                line = f"    {port}/tcp"
+                if svc:
+                    line += f"  {svc}"
+                if b:
+                    # Keep banner short, single line
+                    short = re.sub(r"\s+", " ", b)[:120]
+                    line += f"  banner=\"{short}\""
+                lines.append(line)
+        return "\n".join(lines)
+
     def write_file(self, file_path: str, content: str) -> str:
         abs_work = os.path.abspath(self.working_directory)
         abs_file = os.path.abspath(os.path.join(self.working_directory, file_path))
@@ -257,6 +347,8 @@ class ReconAIAgent:
             return self.subdomain_enum(**inputs)
         if name == "http_fingerprint":
             return self.http_fingerprint(**inputs)
+        if name == "port_scan":
+            return self.port_scan(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'
