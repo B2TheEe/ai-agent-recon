@@ -608,6 +608,156 @@ class ReconAIAgent:
             )
         return "\n".join(lines)
 
+    # ---- service_version_probe -------------------------------------------
+
+    # Ports that typically speak TLS — wrap socket before probing
+    _TLS_PORTS = {443, 465, 636, 993, 995, 8443, 9443}
+    # Ports that should receive an HTTP GET request
+    _HTTP_PORTS = {80, 81, 591, 631, 1080, 2000, 3000, 5000, 5800, 7001,
+                   8000, 8008, 8080, 8081, 8090, 8443, 8888, 9000, 9090,
+                   9200, 9300, 10000}
+
+    @staticmethod
+    def _extract_version(banner: str, service_hint: str = "") -> str:
+        """Pull a best-guess 'product version' string from a banner."""
+        if not banner:
+            return ""
+        b = banner.strip()
+        # SSH: "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3"
+        m = re.match(r"SSH-\d+\.\d+-(\S+)", b)
+        if m:
+            return f"SSH/{m.group(1)}"
+        # SMTP/POP3/IMAP/FTP greeting: "220 <host> ESMTP Postfix (Ubuntu)"
+        m = re.match(r"^(\d{3})[ -](.+)", b.split("\n")[0])
+        if m:
+            return f"{service_hint or 'banner'}/{m.group(2).strip()[:120]}"
+        # HTTP Server header
+        m = re.search(r"^Server:\s*(.+?)\r?$", b, re.MULTILINE)
+        if m:
+            return f"HTTP/{m.group(1).strip()}"
+        # Redis PONG: response to PING is "+PONG\r\n", INFO has "redis_version:X.Y.Z"
+        m = re.search(r"redis_version:(\S+)", b)
+        if m:
+            return f"Redis/{m.group(1)}"
+        # MySQL protocol: byte 5 is protocol version (10), then null-terminated server version
+        # Banner shows up after a 4-byte header; just look for digits-dot pattern
+        m = re.search(r"(\d+\.\d+\.\d+[\w.-]*)", b)
+        if m and service_hint:
+            return f"{service_hint}/{m.group(1)}"
+        return ""
+
+    async def _probe_port(self, host: str, port: int, timeout: float,
+                          sem: asyncio.Semaphore):
+        async with sem:
+            try:
+                fut = asyncio.open_connection(host, port)
+                reader, writer = await asyncio.wait_for(fut, timeout=timeout)
+            except (asyncio.TimeoutError, OSError, ConnectionRefusedError):
+                return (port, None, "(connection failed)")
+
+            banner = ""
+            service_hint = ""
+            try:
+                # 1) Read whatever the server speaks first (most banner protocols)
+                try:
+                    data = await asyncio.wait_for(reader.read(512),
+                                                  timeout=1.0)
+                    banner = data.decode("utf-8", errors="replace")
+                except asyncio.TimeoutError:
+                    banner = ""
+
+                # 2) If nothing came back, send a protocol-specific probe
+                if not banner.strip():
+                    probe = None
+                    if port in self._HTTP_PORTS:
+                        probe = (f"GET / HTTP/1.0\r\nHost: {host}\r\n"
+                                 "User-Agent: ai-agent-recon/0.1\r\n\r\n").encode()
+                        service_hint = "HTTP"
+                    elif port == 6379:  # Redis
+                        probe = b"*1\r\n$4\r\nPING\r\n"
+                        service_hint = "Redis"
+                    elif port == 11211:  # memcached
+                        probe = b"version\r\n"
+                        service_hint = "memcached"
+
+                    if probe:
+                        writer.write(probe)
+                        await writer.drain()
+                        try:
+                            data = await asyncio.wait_for(reader.read(1024),
+                                                          timeout=timeout)
+                            banner = data.decode("utf-8", errors="replace")
+                        except asyncio.TimeoutError:
+                            pass
+
+                # 3) Service-aware EHLO for SMTP / STARTTLS-style ports
+                if port in (25, 587, 465) and banner.startswith("220"):
+                    service_hint = "SMTP"
+                    try:
+                        writer.write(b"EHLO recon.local\r\n")
+                        await writer.drain()
+                        more = await asyncio.wait_for(reader.read(2048),
+                                                      timeout=1.5)
+                        banner += "\n" + more.decode("utf-8", errors="replace")
+                    except asyncio.TimeoutError:
+                        pass
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+
+            # Service hint from well-known ports if we didn't set one
+            if not service_hint:
+                hints = {
+                    21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
+                    53: "DNS", 80: "HTTP", 110: "POP3", 143: "IMAP",
+                    443: "HTTPS", 3306: "MySQL", 5432: "PostgreSQL",
+                    6379: "Redis", 9200: "Elasticsearch", 11211: "memcached",
+                }
+                service_hint = hints.get(port, "")
+
+            version = self._extract_version(banner, service_hint)
+            return (port, service_hint, version or banner.strip()[:150])
+
+    async def _run_version_probe(self, host: str, ports: list,
+                                 timeout: float, concurrency: int):
+        sem = asyncio.Semaphore(concurrency)
+        tasks = [self._probe_port(host, p, timeout, sem) for p in ports]
+        return await asyncio.gather(*tasks)
+
+    def service_version_probe(self, host: str, ports: list,
+                              timeout: float = 4.0,
+                              concurrency: int = 20) -> str:
+        host = self._normalize_domain(host)
+        try:
+            resolved = socket.gethostbyname(host)
+        except socket.gaierror as e:
+            return f"Error: DNS resolution for {host} failed: {e}"
+
+        ports = sorted(set(int(p) for p in ports if 1 <= int(p) <= 65535))
+        if not ports:
+            return f"Error: no valid ports provided"
+
+        try:
+            results = asyncio.run(
+                self._run_version_probe(host, ports, timeout, concurrency)
+            )
+        except Exception as e:
+            return f"Error: probe failed: {e}"
+
+        lines = [f"Service version probe for {host} ({resolved})",
+                 f"  Probed: {len(ports)} ports, timeout={timeout}s"]
+        for port, service, info in sorted(results, key=lambda r: r[0]):
+            svc = service or "?"
+            line = f"    {port}/tcp  {svc:<8}"
+            if info:
+                short = re.sub(r"\s+", " ", info)[:140]
+                line += f"  {short}"
+            lines.append(line)
+        return "\n".join(lines)
+
     # ---- write_file -------------------------------------------------------
 
     def write_file(self, file_path: str, content: str) -> str:
@@ -651,6 +801,8 @@ class ReconAIAgent:
             return self.http_methods(**inputs)
         if name == "vhost_discovery":
             return self.vhost_discovery(**inputs)
+        if name == "service_version_probe":
+            return self.service_version_probe(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

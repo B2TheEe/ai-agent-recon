@@ -27,7 +27,7 @@ sudo apt install whois
 Single-agent loop built on Anthropic tool-use API:
 
 - `prompts.py` — system prompt defining agent persona and tool instructions
-- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `ssl_inspect`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, `write_file`), entry point
+- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `ssl_inspect`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, `service_version_probe`, `write_file`), entry point
 - `tools.json` — Anthropic tool schemas (single source of truth, loaded at import time in `recon.py`)
 
 **Agent loop** (`run_agent`): sends user query → receives `tool_use` stop → dispatches tool → appends `tool_result` → loops until `end_turn`. Report written to `OUTPUT_DIR/recon_[company]_[date]T[time]`.
@@ -43,6 +43,7 @@ Single-agent loop built on Anthropic tool-use API:
 - `directory_bruteforce(url, paths=None, concurrency=20, timeout=10)` — **ACTIVE** async HTTP path enumeration. Builtin wordlist ~60 high-value paths (dotfiles, admin panels, .git, swagger, etc.). Filters to interesting status codes (200/201/204/301/302/307/401/403/500), sorts 200s first.
 - `http_methods(url)` — **ACTIVE** check of allowed HTTP methods. Reads OPTIONS Allow header AND actively probes GET/HEAD/PUT/DELETE/PATCH/TRACE. Flags PUT/DELETE/PATCH/TRACE that return <400 as RISKY.
 - `vhost_discovery(target, base_domain, hostnames=None, ...)` — **ACTIVE** Host-header fuzzing. Establishes baseline with a bogus hostname, then reports vhosts whose response differs from baseline (status or content-length >50 bytes diff).
+- `service_version_probe(host, ports, timeout=4, concurrency=20)` — **ACTIVE** deep service fingerprint. Per port: reads the speak-first banner, falls back to a protocol-specific probe (HTTP GET, Redis PING, memcached `version`), runs SMTP EHLO for 25/465/587. Extracts versions via regex (SSH, HTTP Server header, Redis `redis_version:`, numeric `X.Y.Z` patterns). Typically chained after `port_scan`.
 - `write_file(file_path, content)` — Sandboxed to `OUTPUT_DIR`; refuses paths that escape the working directory.
 
 ## Known caveats
@@ -52,7 +53,7 @@ Single-agent loop built on Anthropic tool-use API:
 
 ## Ethics
 
-`port_scan`, `directory_bruteforce`, `http_methods`, and `vhost_discovery` are the *active* tools in the kit — they send real packets and produce scanner-like footprints. Only run them against:
+`port_scan`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, and `service_version_probe` are the *active* tools in the kit — they send real packets and produce scanner-like footprints. Only run them against:
 - hosts you own,
 - hosts you have written permission to test,
 - explicitly public scan targets such as `scanme.nmap.org` (used by the Nmap project itself for this purpose).

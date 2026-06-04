@@ -19,9 +19,10 @@ AI-powered reconnaissance agent. Give it a target company and Claude orchestrate
 | `directory_bruteforce` | **ACTIVE** | Async HTTP path enum — dotfiles, admin, .git, swagger, etc. (~60 paths)      |
 | `http_methods`         | **ACTIVE** | Probes GET/HEAD/OPTIONS/PUT/DELETE/PATCH/TRACE; flags risky methods          |
 | `vhost_discovery`      | **ACTIVE** | Host-header fuzzing to find vhosts not in DNS; baseline-anomaly detection    |
+| `service_version_probe` | **ACTIVE** | Deep per-port fingerprint: SSH/SMTP/HTTP/Redis/memcached + version extract  |
 | `write_file`           | local      | Sandboxed writes to `OUTPUT_DIR`                                             |
 
-`port_scan`, `directory_bruteforce`, `http_methods`, and `vhost_discovery` are **ACTIVE** — they send real packets and appear in target logs. Only run them against hosts you own or have written permission to test. `scanme.nmap.org` (port_scan) and `httpbin.org` (HTTP tools, owned by Postman, allows automated traffic) are safe public targets for verifying the toolkit works.
+`port_scan`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, and `service_version_probe` are **ACTIVE** — they send real packets and appear in target logs. Only run them against hosts you own or have written permission to test. `scanme.nmap.org` (port_scan) and `httpbin.org` (HTTP tools, owned by Postman, allows automated traffic) are safe public targets for verifying the toolkit works.
 
 ## Setup
 

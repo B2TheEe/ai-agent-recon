@@ -32,12 +32,12 @@ def agent(tmp_path, monkeypatch):
 
 
 def test_tools_schema_loaded_from_json():
-    assert isinstance(tools, list) and len(tools) >= 10
+    assert isinstance(tools, list) and len(tools) >= 11
     names = {t["name"] for t in tools}
     expected = {"web_search", "whois_lookup", "dns_lookup", "subdomain_enum",
                 "http_fingerprint", "port_scan", "ssl_inspect",
                 "directory_bruteforce", "http_methods", "vhost_discovery",
-                "write_file"}
+                "service_version_probe", "write_file"}
     assert expected.issubset(names)
     for t in tools:
         assert "name" in t and "description" in t and "input_schema" in t
@@ -428,3 +428,60 @@ def test_vhost_discovery_baseline_failure(agent):
          patch("recon.httpx.Client", return_value=fake_client):
         out = agent.vhost_discovery("https://1.2.3.4", "example.com")
     assert "baseline request failed" in out
+
+
+# ----------------------------- service_version_probe ------------------------
+
+
+@pytest.mark.parametrize("banner, hint, expected_substr", [
+    ("SSH-2.0-OpenSSH_8.9p1 Ubuntu-3", "", "SSH/OpenSSH_8.9p1"),
+    ("220 mail.example.com ESMTP Postfix (Ubuntu)", "SMTP",
+        "SMTP/mail.example.com ESMTP Postfix"),
+    ("HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\nContent-Type: text/html",
+        "HTTP", "HTTP/nginx/1.25.3"),
+    ("$2756\r\n# Server\r\nredis_version:7.2.4\r\nredis_git_sha1:00000000",
+        "Redis", "Redis/7.2.4"),
+    ("", "", ""),  # empty banner -> empty version
+])
+def test_extract_version(banner, hint, expected_substr):
+    out = ReconAIAgent._extract_version(banner, hint)
+    if expected_substr:
+        assert expected_substr in out
+    else:
+        assert out == ""
+
+
+def test_service_version_probe_aggregates_and_reports(agent):
+    fake_results = [
+        (22, "SSH", "SSH/OpenSSH_8.9p1"),
+        (80, "HTTP", "HTTP/nginx/1.25.3"),
+        (9999, None, "(connection failed)"),
+    ]
+    with patch("recon.socket.gethostbyname", return_value="1.2.3.4"), \
+         patch.object(ReconAIAgent, "_run_version_probe", return_value=None), \
+         patch("recon.asyncio.run", return_value=fake_results):
+        out = agent.service_version_probe("example.com",
+                                          ports=[22, 80, 9999])
+
+    assert "1.2.3.4" in out
+    assert "22/tcp  SSH" in out
+    assert "OpenSSH_8.9p1" in out
+    assert "80/tcp  HTTP" in out
+    assert "nginx/1.25.3" in out
+    assert "9999/tcp" in out
+    assert "(connection failed)" in out
+
+
+def test_service_version_probe_dns_failure(agent):
+    with patch("recon.socket.gethostbyname",
+               side_effect=socket.gaierror("nope")), \
+         patch.object(ReconAIAgent, "_run_version_probe", return_value=None), \
+         patch("recon.asyncio.run"):
+        out = agent.service_version_probe("does-not-exist.example",
+                                          ports=[22])
+    assert "DNS resolution" in out and "failed" in out
+
+
+def test_service_version_probe_empty_ports(agent):
+    out = agent.service_version_probe("example.com", ports=[])
+    assert "no valid ports" in out

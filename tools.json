@@ -200,6 +200,33 @@
         }
     },
     {
+        "name": "service_version_probe",
+        "description": "ACTIVE deep service fingerprinting. Per port: sends a protocol-specific probe (HTTP GET, SMTP EHLO, Redis PING, MySQL handshake read, TLS handshake) and extracts the service + version string. Builds on port_scan output. Only run against hosts you have permission to test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Hostname or IP to probe."
+                },
+                "ports": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "List of ports to probe. Typically the open ports from a prior port_scan."
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Per-probe timeout in seconds (default 4)"
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "description": "Max concurrent probes (default 20)"
+                }
+            },
+            "required": ["host", "ports"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {
