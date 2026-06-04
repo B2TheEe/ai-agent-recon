@@ -5,6 +5,7 @@ import re
 import socket
 import ssl
 import subprocess
+import time
 from datetime import datetime, timezone
 import anthropic
 import dns.resolver
@@ -758,6 +759,217 @@ class ReconAIAgent:
             lines.append(line)
         return "\n".join(lines)
 
+    # ---- cve_lookup -------------------------------------------------------
+
+    @staticmethod
+    def _parse_service_version(s: str):
+        """Extract (product, version) from a probe info string.
+
+        Handles 'X/Product/Version' (HTTP/Apache/2.4.7),
+        'X/Product_Version' (SSH/OpenSSH_6.6.1p1),
+        and 'Product/Version' (Redis/7.2.4).
+        """
+        if not s:
+            return None
+        # X/Product/Version  or  X/Product_Version
+        m = re.match(r"^[^/]+/([A-Za-z][A-Za-z0-9]*)[_/]([\d][\d.]*[\w.-]*)",
+                     s)
+        if m:
+            return (m.group(1), m.group(2))
+        # Product/Version
+        m = re.match(r"^([A-Za-z][A-Za-z0-9]*)/([\d][\d.]*[\w.-]*)", s)
+        if m:
+            return (m.group(1), m.group(2))
+        return None
+
+    @staticmethod
+    def _extract_cvss(cve: dict):
+        """Pull (score, severity) from an NVD CVE record, trying v4/v3.1/v3/v2."""
+        metrics = cve.get("metrics", {})
+        for key in ("cvssMetricV40", "cvssMetricV31",
+                    "cvssMetricV30", "cvssMetricV2"):
+            arr = metrics.get(key, [])
+            if arr:
+                cvss = arr[0].get("cvssData", {})
+                score = cvss.get("baseScore")
+                severity = cvss.get("baseSeverity", "")
+                # CVSSv2 doesn't always include baseSeverity
+                if score is not None and not severity:
+                    if score >= 9.0:
+                        severity = "CRITICAL"
+                    elif score >= 7.0:
+                        severity = "HIGH"
+                    elif score >= 4.0:
+                        severity = "MEDIUM"
+                    else:
+                        severity = "LOW"
+                return (score, severity)
+        return (None, "")
+
+    def cve_lookup(self, product: str, version: str = "",
+                   limit: int = 5) -> str:
+        if not product:
+            return "Error: product is required"
+
+        def _query(keyword: str):
+            url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+            params = {
+                "keywordSearch": keyword,
+                "resultsPerPage": min(max(int(limit), 1), 50),
+            }
+            try:
+                r = httpx.get(url, params=params, timeout=20.0,
+                              headers={"User-Agent": "ai-agent-recon/0.1"})
+            except httpx.HTTPError as e:
+                return None, f"NVD request failed: {e}"
+            if r.status_code != 200:
+                return None, f"NVD returned HTTP {r.status_code}"
+            try:
+                return r.json(), None
+            except json.JSONDecodeError:
+                return None, "NVD returned non-JSON response"
+
+        keyword = f"{product} {version}".strip()
+        data, err = _query(keyword)
+        if err:
+            return f"Error: {err}"
+
+        retried = False
+        if not data.get("vulnerabilities") and version:
+            # Retry with product alone — NVD keywordSearch is whole-word,
+            # so 'OpenSSH 6.6.1' often misses while 'OpenSSH' hits.
+            retried = True
+            time.sleep(0.5)  # be polite
+            data, err = _query(product)
+            if err:
+                return f"Error: {err}"
+            keyword = product
+
+        vulns = data.get("vulnerabilities", [])
+        total = data.get("totalResults", len(vulns))
+
+        if not vulns:
+            return f"CVE lookup: {keyword}\n  No CVEs found"
+
+        entries = []
+        for v in vulns:
+            cve = v.get("cve", {})
+            cid = cve.get("id", "?")
+            desc = ""
+            for d in cve.get("descriptions", []):
+                if d.get("lang") == "en":
+                    desc = d.get("value", "")
+                    break
+            score, severity = self._extract_cvss(cve)
+            entries.append((score if score is not None else -1.0,
+                            cid, severity, desc))
+
+        # Sort by CVSS desc (None at end)
+        entries.sort(key=lambda x: -x[0])
+
+        header = f"CVE lookup: {keyword}"
+        if retried:
+            header += f" (retried — no results for '{product} {version}')"
+        lines = [header,
+                 f"  Total CVEs found: {total}, showing top "
+                 f"{min(len(entries), limit)} by CVSS"]
+        for score, cid, severity, desc in entries[:limit]:
+            short_desc = re.sub(r"\s+", " ", desc).strip()[:180]
+            if score >= 0:
+                score_str = f"CVSS {score}"
+                sev_str = f" {severity}" if severity else ""
+            else:
+                score_str = "CVSS n/a"
+                sev_str = ""
+            lines.append(f"    {cid} [{score_str}{sev_str}]  {short_desc}")
+        return "\n".join(lines)
+
+    # ---- recon_report -----------------------------------------------------
+
+    def recon_report(self, host: str, skip_cve: bool = False) -> str:
+        host = self._normalize_domain(host)
+        sections = [
+            f"# Recon Report — {host}",
+            "",
+            f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+            f"Target: `{host}`",
+            "",
+        ]
+
+        # Stage 1: port_scan
+        sections.append("## Port scan")
+        sections.append("")
+        port_scan_out = self.port_scan(host)
+        sections.append("```")
+        sections.append(port_scan_out)
+        sections.append("```")
+        sections.append("")
+
+        # Parse open port numbers from the port_scan output
+        open_ports = []
+        for line in port_scan_out.splitlines():
+            m = re.match(r"^\s+(\d+)/tcp", line)
+            if m:
+                open_ports.append(int(m.group(1)))
+
+        if not open_ports:
+            sections.append(
+                "_No open ports detected — skipping service probe and CVE lookup._"
+            )
+            return "\n".join(sections)
+
+        # Stage 2: service_version_probe
+        sections.append(f"## Service versions ({len(open_ports)} ports)")
+        sections.append("")
+        probe_out = self.service_version_probe(host, open_ports)
+        sections.append("```")
+        sections.append(probe_out)
+        sections.append("```")
+        sections.append("")
+
+        if skip_cve:
+            sections.append("_CVE lookup skipped (skip_cve=true)._")
+            return "\n".join(sections)
+
+        # Stage 3: parse (product, version) tuples + CVE lookup
+        services = []
+        for line in probe_out.splitlines():
+            m = re.match(r"^\s+(\d+)/tcp\s+(\S+)\s+(.+?)$", line)
+            if not m:
+                continue
+            port = m.group(1)
+            service = m.group(2)
+            info = m.group(3).strip()
+            if service == "?" or info.startswith("("):
+                continue
+            parsed = self._parse_service_version(info)
+            if parsed:
+                services.append((port, service, parsed[0], parsed[1]))
+
+        if not services:
+            sections.append("## CVEs")
+            sections.append("")
+            sections.append(
+                "_No service versions could be parsed — nothing to look up._"
+            )
+            return "\n".join(sections)
+
+        sections.append(f"## CVE lookup ({len(services)} services)")
+        sections.append("")
+        for i, (port, svc, product, version) in enumerate(services):
+            sections.append(f"### {port}/tcp — {product} {version}")
+            sections.append("")
+            cve_out = self.cve_lookup(product, version, limit=5)
+            sections.append("```")
+            sections.append(cve_out)
+            sections.append("```")
+            sections.append("")
+            # Gentle rate-limit between NVD calls (5 req / 30s unauthenticated)
+            if i < len(services) - 1:
+                time.sleep(1.0)
+
+        return "\n".join(sections)
+
     # ---- write_file -------------------------------------------------------
 
     def write_file(self, file_path: str, content: str) -> str:
@@ -803,6 +1015,10 @@ class ReconAIAgent:
             return self.vhost_discovery(**inputs)
         if name == "service_version_probe":
             return self.service_version_probe(**inputs)
+        if name == "cve_lookup":
+            return self.cve_lookup(**inputs)
+        if name == "recon_report":
+            return self.recon_report(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

@@ -32,12 +32,13 @@ def agent(tmp_path, monkeypatch):
 
 
 def test_tools_schema_loaded_from_json():
-    assert isinstance(tools, list) and len(tools) >= 11
+    assert isinstance(tools, list) and len(tools) >= 13
     names = {t["name"] for t in tools}
     expected = {"web_search", "whois_lookup", "dns_lookup", "subdomain_enum",
                 "http_fingerprint", "port_scan", "ssl_inspect",
                 "directory_bruteforce", "http_methods", "vhost_discovery",
-                "service_version_probe", "write_file"}
+                "service_version_probe", "cve_lookup", "recon_report",
+                "write_file"}
     assert expected.issubset(names)
     for t in tools:
         assert "name" in t and "description" in t and "input_schema" in t
@@ -485,3 +486,171 @@ def test_service_version_probe_dns_failure(agent):
 def test_service_version_probe_empty_ports(agent):
     out = agent.service_version_probe("example.com", ports=[])
     assert "no valid ports" in out
+
+
+# ----------------------------- cve_lookup -----------------------------------
+
+
+@pytest.mark.parametrize("info, expected", [
+    ("SSH/OpenSSH_6.6.1p1", ("OpenSSH", "6.6.1p1")),
+    ("HTTP/Apache/2.4.7 (Ubuntu)", ("Apache", "2.4.7")),
+    ("HTTP/nginx/1.25.3", ("nginx", "1.25.3")),
+    ("Redis/7.2.4", ("Redis", "7.2.4")),
+    ("(connection failed)", None),
+    ("", None),
+])
+def test_parse_service_version(info, expected):
+    assert ReconAIAgent._parse_service_version(info) == expected
+
+
+def test_extract_cvss_v31_preferred():
+    cve = {
+        "metrics": {
+            "cvssMetricV31": [{"cvssData":
+                              {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}],
+            "cvssMetricV2":  [{"cvssData":
+                              {"baseScore": 5.0, "baseSeverity": "MEDIUM"}}],
+        }
+    }
+    assert ReconAIAgent._extract_cvss(cve) == (9.8, "CRITICAL")
+
+
+def test_extract_cvss_v2_fills_severity():
+    cve = {"metrics": {"cvssMetricV2": [{"cvssData": {"baseScore": 7.5}}]}}
+    assert ReconAIAgent._extract_cvss(cve) == (7.5, "HIGH")
+
+
+def test_extract_cvss_missing():
+    assert ReconAIAgent._extract_cvss({"metrics": {}}) == (None, "")
+
+
+def test_cve_lookup_no_results(agent):
+    fake = MagicMock(status_code=200)
+    fake.json.return_value = {"vulnerabilities": [], "totalResults": 0}
+    with patch("recon.httpx.get", return_value=fake):
+        out = agent.cve_lookup("Nonsense9000")
+    assert "No CVEs found" in out
+
+
+def test_cve_lookup_retry_on_empty_with_version(agent):
+    """First call (with version) returns empty -> retry with product only."""
+    empty = MagicMock(status_code=200)
+    empty.json.return_value = {"vulnerabilities": [], "totalResults": 0}
+    populated = MagicMock(status_code=200)
+    populated.json.return_value = {
+        "vulnerabilities": [{
+            "cve": {
+                "id": "CVE-2024-1234",
+                "descriptions": [{"lang": "en", "value": "Test vuln"}],
+                "metrics": {
+                    "cvssMetricV31": [
+                        {"cvssData": {"baseScore": 9.1,
+                                      "baseSeverity": "CRITICAL"}}
+                    ]
+                },
+            }
+        }],
+        "totalResults": 1,
+    }
+    with patch("recon.httpx.get", side_effect=[empty, populated]), \
+         patch("recon.time.sleep"):
+        out = agent.cve_lookup("OpenSSH", "6.6.1p1", limit=3)
+    assert "retried" in out
+    assert "CVE-2024-1234" in out
+    assert "CVSS 9.1" in out
+    assert "CRITICAL" in out
+
+
+def test_cve_lookup_sorts_by_cvss_desc(agent):
+    fake = MagicMock(status_code=200)
+    fake.json.return_value = {
+        "vulnerabilities": [
+            {"cve": {"id": "CVE-A",
+                     "descriptions": [{"lang": "en", "value": "low"}],
+                     "metrics": {"cvssMetricV31": [
+                         {"cvssData": {"baseScore": 3.0,
+                                       "baseSeverity": "LOW"}}]}}},
+            {"cve": {"id": "CVE-B",
+                     "descriptions": [{"lang": "en", "value": "high"}],
+                     "metrics": {"cvssMetricV31": [
+                         {"cvssData": {"baseScore": 9.5,
+                                       "baseSeverity": "CRITICAL"}}]}}},
+            {"cve": {"id": "CVE-C",
+                     "descriptions": [{"lang": "en", "value": "mid"}],
+                     "metrics": {"cvssMetricV31": [
+                         {"cvssData": {"baseScore": 6.0,
+                                       "baseSeverity": "MEDIUM"}}]}}},
+        ],
+        "totalResults": 3,
+    }
+    with patch("recon.httpx.get", return_value=fake):
+        out = agent.cve_lookup("nginx", limit=3)
+    idx_b = out.find("CVE-B")
+    idx_c = out.find("CVE-C")
+    idx_a = out.find("CVE-A")
+    assert 0 < idx_b < idx_c < idx_a
+
+
+def test_cve_lookup_http_error(agent):
+    fake = MagicMock(status_code=503)
+    with patch("recon.httpx.get", return_value=fake):
+        out = agent.cve_lookup("Apache")
+    assert "503" in out
+
+
+# ----------------------------- recon_report --------------------------------
+
+
+def test_recon_report_chains_all_stages(agent):
+    fake_port_scan = (
+        "TCP port scan for example.com (1.2.3.4)\n"
+        "  Open: 2\n"
+        "    22/tcp  ssh  banner=\"SSH-2.0-OpenSSH_6.6.1p1\"\n"
+        "    80/tcp  http"
+    )
+    fake_probe = (
+        "Service version probe for example.com (1.2.3.4)\n"
+        "  Probed: 2 ports\n"
+        "    22/tcp  SSH       SSH/OpenSSH_6.6.1p1\n"
+        "    80/tcp  HTTP      HTTP/Apache/2.4.7"
+    )
+    with patch.object(ReconAIAgent, "port_scan",
+                      return_value=fake_port_scan), \
+         patch.object(ReconAIAgent, "service_version_probe",
+                      return_value=fake_probe), \
+         patch.object(ReconAIAgent, "cve_lookup",
+                      return_value="CVE lookup: stub\n  No CVEs found"), \
+         patch("recon.time.sleep"):
+        out = agent.recon_report("example.com")
+
+    assert "# Recon Report — example.com" in out
+    assert "## Port scan" in out
+    assert "## Service versions (2 ports)" in out
+    assert "## CVE lookup (2 services)" in out
+    assert "### 22/tcp — OpenSSH 6.6.1p1" in out
+    assert "### 80/tcp — Apache 2.4.7" in out
+    # Both probe + port_scan output blocks present
+    assert "1.2.3.4" in out
+
+
+def test_recon_report_no_open_ports(agent):
+    closed = ("TCP port scan for example.com (1.2.3.4)\n"
+              "  Open: 0\n"
+              "  (no open ports detected in scanned range)")
+    with patch.object(ReconAIAgent, "port_scan", return_value=closed):
+        out = agent.recon_report("example.com")
+    assert "No open ports detected" in out
+    assert "## Service versions" not in out
+
+
+def test_recon_report_skip_cve(agent):
+    fake_port_scan = ("scan\n  Open: 1\n    22/tcp  ssh  banner=\"x\"")
+    fake_probe = ("probe\n  Probed: 1\n    22/tcp  SSH  SSH/OpenSSH_8.9p1")
+    with patch.object(ReconAIAgent, "port_scan",
+                      return_value=fake_port_scan), \
+         patch.object(ReconAIAgent, "service_version_probe",
+                      return_value=fake_probe), \
+         patch.object(ReconAIAgent, "cve_lookup") as cve_mock:
+        out = agent.recon_report("example.com", skip_cve=True)
+    cve_mock.assert_not_called()
+    assert "CVE lookup skipped" in out

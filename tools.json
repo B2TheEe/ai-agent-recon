@@ -227,6 +227,46 @@
         }
     },
     {
+        "name": "cve_lookup",
+        "description": "Queries the NIST NVD CVE database for vulnerabilities matching a product + version. Passive (read-only API query, no traffic to target). Returns top CVEs sorted by CVSS score.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product": {
+                    "type": "string",
+                    "description": "Product name, e.g. 'OpenSSH', 'Apache', 'nginx'"
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Version string, e.g. '6.6.1p1', '2.4.7'. Empty for product-only search."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max CVEs to return (default 5)"
+                }
+            },
+            "required": ["product"]
+        }
+    },
+    {
+        "name": "recon_report",
+        "description": "ACTIVE end-to-end recon chainer: runs port_scan + service_version_probe + cve_lookup per detected service, then returns a consolidated markdown report. The convenience tool — one call, one report. Only run against hosts you have permission to test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Target hostname or IP"
+                },
+                "skip_cve": {
+                    "type": "boolean",
+                    "description": "Skip the CVE lookup phase (default false)"
+                }
+            },
+            "required": ["host"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {

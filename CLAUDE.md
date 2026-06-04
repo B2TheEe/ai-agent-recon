@@ -27,7 +27,7 @@ sudo apt install whois
 Single-agent loop built on Anthropic tool-use API:
 
 - `prompts.py` — system prompt defining agent persona and tool instructions
-- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `ssl_inspect`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, `service_version_probe`, `write_file`), entry point
+- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `ssl_inspect`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, `service_version_probe`, `cve_lookup`, `recon_report`, `write_file`), entry point
 - `tools.json` — Anthropic tool schemas (single source of truth, loaded at import time in `recon.py`)
 
 **Agent loop** (`run_agent`): sends user query → receives `tool_use` stop → dispatches tool → appends `tool_result` → loops until `end_turn`. Report written to `OUTPUT_DIR/recon_[company]_[date]T[time]`.
@@ -44,6 +44,8 @@ Single-agent loop built on Anthropic tool-use API:
 - `http_methods(url)` — **ACTIVE** check of allowed HTTP methods. Reads OPTIONS Allow header AND actively probes GET/HEAD/PUT/DELETE/PATCH/TRACE. Flags PUT/DELETE/PATCH/TRACE that return <400 as RISKY.
 - `vhost_discovery(target, base_domain, hostnames=None, ...)` — **ACTIVE** Host-header fuzzing. Establishes baseline with a bogus hostname, then reports vhosts whose response differs from baseline (status or content-length >50 bytes diff).
 - `service_version_probe(host, ports, timeout=4, concurrency=20)` — **ACTIVE** deep service fingerprint. Per port: reads the speak-first banner, falls back to a protocol-specific probe (HTTP GET, Redis PING, memcached `version`), runs SMTP EHLO for 25/465/587. Extracts versions via regex (SSH, HTTP Server header, Redis `redis_version:`, numeric `X.Y.Z` patterns). Typically chained after `port_scan`.
+- `cve_lookup(product, version="", limit=5)` — Queries NIST NVD (`services.nvd.nist.gov/rest/json/cves/2.0`). Sorts by CVSS desc, prefers v4 > v3.1 > v3 > v2 metrics. Retries with product-only if `product + version` returns empty (NVD keywordSearch is whole-word).
+- `recon_report(host, skip_cve=False)` — **ACTIVE** convenience chainer. Runs `port_scan` → parses open ports → `service_version_probe` → parses `(product, version)` tuples → `cve_lookup` per service. Output is a single markdown document. Use this when you want the whole recon picture in one call. Polite 1s sleep between NVD calls.
 - `write_file(file_path, content)` — Sandboxed to `OUTPUT_DIR`; refuses paths that escape the working directory.
 
 ## Known caveats
