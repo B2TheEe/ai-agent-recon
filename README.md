@@ -15,10 +15,13 @@ AI-powered reconnaissance agent. Give it a target company and Claude orchestrate
 | `subdomain_enum`    | passive | Certificate transparency search via crt.sh                                         |
 | `http_fingerprint`  | passive | Status, security headers, redirect chain, cookies, tech-stack hints, page title    |
 | `ssl_inspect`       | passive | TLS cert subject/issuer/SANs/validity, negotiated version + cipher                 |
-| `port_scan`         | **ACTIVE** | Async TCP connect-scan + banner grab, nmap top-100 by default                   |
-| `write_file`        | local   | Sandboxed writes to `OUTPUT_DIR`                                                   |
+| `port_scan`            | **ACTIVE** | Async TCP connect-scan + banner grab, nmap top-100 by default                |
+| `directory_bruteforce` | **ACTIVE** | Async HTTP path enum — dotfiles, admin, .git, swagger, etc. (~60 paths)      |
+| `http_methods`         | **ACTIVE** | Probes GET/HEAD/OPTIONS/PUT/DELETE/PATCH/TRACE; flags risky methods          |
+| `vhost_discovery`      | **ACTIVE** | Host-header fuzzing to find vhosts not in DNS; baseline-anomaly detection    |
+| `write_file`           | local      | Sandboxed writes to `OUTPUT_DIR`                                             |
 
-`port_scan` is the only tool that touches the target with scanner-like traffic. Only run it against hosts you own or have written permission to test (`scanme.nmap.org` is a safe public target).
+`port_scan`, `directory_bruteforce`, `http_methods`, and `vhost_discovery` are **ACTIVE** — they send real packets and appear in target logs. Only run them against hosts you own or have written permission to test. `scanme.nmap.org` (port_scan) and `httpbin.org` (HTTP tools, owned by Postman, allows automated traffic) are safe public targets for verifying the toolkit works.
 
 ## Setup
 

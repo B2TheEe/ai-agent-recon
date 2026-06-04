@@ -27,7 +27,7 @@ sudo apt install whois
 Single-agent loop built on Anthropic tool-use API:
 
 - `prompts.py` — system prompt defining agent persona and tool instructions
-- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `write_file`), entry point
+- `recon.py` — `ReconAIAgent` class with agent loop, tools (`web_search`, `whois_lookup`, `dns_lookup`, `subdomain_enum`, `http_fingerprint`, `port_scan`, `ssl_inspect`, `directory_bruteforce`, `http_methods`, `vhost_discovery`, `write_file`), entry point
 - `tools.json` — Anthropic tool schemas (single source of truth, loaded at import time in `recon.py`)
 
 **Agent loop** (`run_agent`): sends user query → receives `tool_use` stop → dispatches tool → appends `tool_result` → loops until `end_turn`. Report written to `OUTPUT_DIR/recon_[company]_[date]T[time]`.
@@ -40,6 +40,9 @@ Single-agent loop built on Anthropic tool-use API:
 - `subdomain_enum(domain, limit=100)` — Passive subdomain discovery via crt.sh certificate transparency logs (no traffic to target). Deduplicates and sorts results.
 - `http_fingerprint(target)` — HTTP banner grab via `httpx`: status, final URL after redirects, redirect chain, security headers, cookies, naive tech-stack hints (PHP / ASP.NET / Laravel / Rails / nginx / IIS / Cloudflare), and page title.
 - `port_scan(host, ports=None, timeout=1.5, concurrency=200, banner=True)` — **ACTIVE** TCP port scan via `asyncio.open_connection`. Defaults to nmap top-100 TCP ports. Reads a tiny banner from open ports when services speak first (SSH/FTP/SMTP). Resolves hostnames before scanning so the actual scanned IP is reported. Permission required — see ethical note below.
+- `directory_bruteforce(url, paths=None, concurrency=20, timeout=10)` — **ACTIVE** async HTTP path enumeration. Builtin wordlist ~60 high-value paths (dotfiles, admin panels, .git, swagger, etc.). Filters to interesting status codes (200/201/204/301/302/307/401/403/500), sorts 200s first.
+- `http_methods(url)` — **ACTIVE** check of allowed HTTP methods. Reads OPTIONS Allow header AND actively probes GET/HEAD/PUT/DELETE/PATCH/TRACE. Flags PUT/DELETE/PATCH/TRACE that return <400 as RISKY.
+- `vhost_discovery(target, base_domain, hostnames=None, ...)` — **ACTIVE** Host-header fuzzing. Establishes baseline with a bogus hostname, then reports vhosts whose response differs from baseline (status or content-length >50 bytes diff).
 - `write_file(file_path, content)` — Sandboxed to `OUTPUT_DIR`; refuses paths that escape the working directory.
 
 ## Known caveats
@@ -49,9 +52,9 @@ Single-agent loop built on Anthropic tool-use API:
 
 ## Ethics
 
-`port_scan` is the only *active* tool in the kit — it sends real TCP SYN packets to the target. Only run it against:
+`port_scan`, `directory_bruteforce`, `http_methods`, and `vhost_discovery` are the *active* tools in the kit — they send real packets and produce scanner-like footprints. Only run them against:
 - hosts you own,
 - hosts you have written permission to test,
 - explicitly public scan targets such as `scanme.nmap.org` (used by the Nmap project itself for this purpose).
 
-All other tools (`whois_lookup`, `dns_lookup`, `subdomain_enum`, `web_search`, `http_fingerprint`) are passive or query-only and produce no scanner-like footprint on the target. `http_fingerprint` does make a single normal HTTPS GET — fine in almost every context but still log-visible.
+All other tools (`whois_lookup`, `dns_lookup`, `subdomain_enum`, `web_search`, `http_fingerprint`, `ssl_inspect`) are passive or query-only and produce no scanner-like footprint on the target. `http_fingerprint` and `ssl_inspect` do open a single normal connection each — fine in almost every context but still log-visible.

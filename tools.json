@@ -128,6 +128,78 @@
         }
     },
     {
+        "name": "directory_bruteforce",
+        "description": "ACTIVE web path enumeration. Sends HTTP GETs for a wordlist of common paths (admin, .git, .env, robots.txt, api, swagger, ...) and reports interesting status codes. Builtin wordlist ~60 paths. Only run against hosts you have permission to test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Base URL or bare domain. https:// is prepended if missing."
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional custom wordlist. Defaults to a builtin ~60-entry list."
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "description": "Max concurrent requests (default 20)"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Per-request timeout in seconds (default 10)"
+                }
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "http_methods",
+        "description": "ACTIVE check of allowed HTTP methods on a URL. Reads the OPTIONS Allow header AND actively probes GET/HEAD/PUT/DELETE/PATCH/TRACE. WARNING: PUT/DELETE/PATCH against a misconfigured server could mutate state. Only run with explicit permission.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Target URL. https:// is prepended if missing."
+                }
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "vhost_discovery",
+        "description": "ACTIVE virtual host enumeration. Sends requests with fuzzed Host headers (e.g. admin.target.com, staging.target.com) and reports responses that differ from a bogus-host baseline. Finds vhosts that aren't in public DNS.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "IP or hostname to connect to. https:// is prepended if missing."
+                },
+                "base_domain": {
+                    "type": "string",
+                    "description": "Domain to prepend the wordlist to (e.g. 'example.com' -> 'admin.example.com')"
+                },
+                "hostnames": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional custom prefix wordlist. Defaults to a builtin ~60-entry list."
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "description": "Max concurrent requests (default 15)"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Per-request timeout in seconds (default 8)"
+                }
+            },
+            "required": ["target", "base_domain"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {

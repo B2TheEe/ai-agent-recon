@@ -20,6 +20,48 @@ _TOOLS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools.js
 with open(_TOOLS_PATH, "r", encoding="utf-8") as _f:
     tools = json.load(_f)
 
+# Builtin wordlist for directory_bruteforce — common high-value paths
+DEFAULT_DIRECTORY_PATHS = [
+    # dotfiles + VCS leaks
+    ".env", ".env.local", ".env.production", ".git/config", ".git/HEAD",
+    ".svn/entries", ".hg/hgrc", ".DS_Store", ".htaccess", ".htpasswd",
+    "web.config",
+    # backup / dumps
+    "backup.zip", "backup.tar.gz", "backup.sql", "db.sql", "dump.sql",
+    "database.sql", "site.tar.gz",
+    # admin / auth
+    "admin", "admin/", "admin/login", "administrator", "wp-admin/",
+    "login", "signin", "auth", "console", "manage", "panel",
+    # api / docs
+    "api", "api/", "api/v1", "api/v2", "graphql", "swagger", "swagger-ui",
+    "openapi.json", "api-docs", "redoc",
+    # debug / status
+    "debug", "test", "phpinfo.php", "info.php", "server-status",
+    "server-info", "metrics", "health", "actuator", "actuator/env",
+    # platform-specific
+    "wp-config.php", "wp-login.php", "wp-json/", ".well-known/security.txt",
+    # crawler / meta
+    "robots.txt", "sitemap.xml", "crossdomain.xml", "humans.txt",
+    # versioning
+    "CHANGELOG", "CHANGELOG.md", "VERSION", "version.txt",
+    # data dirs
+    "uploads/", "files/", "data/", "logs/", "log/", "tmp/",
+    "config/", "config.php", "config.json", "config.yml",
+]
+
+# Builtin wordlist for vhost_discovery — common subdomain prefixes
+DEFAULT_VHOST_PREFIXES = [
+    "admin", "administrator", "api", "app", "apps", "auth", "backup",
+    "beta", "blog", "cdn", "ci", "cms", "cpanel", "dashboard", "db",
+    "dev", "development", "demo", "docs", "files", "ftp", "git", "grafana",
+    "internal", "intranet", "jenkins", "jira", "kibana", "log", "logs",
+    "mail", "manage", "media", "mobile", "monitoring", "ns1", "ns2",
+    "old", "panel", "portal", "preview", "private", "prod", "production",
+    "qa", "redmine", "remote", "secure", "shop", "smtp", "ssh", "staging",
+    "stats", "status", "store", "support", "test", "testing", "uat",
+    "upload", "vpn", "webmail", "www", "www2", "wiki",
+]
+
 # nmap top-100 TCP ports (from nmap-services, ordered by frequency)
 TOP_100_TCP_PORTS = [
     7, 9, 13, 21, 22, 23, 25, 26, 37, 53, 79, 80, 81, 88, 106, 110, 111, 113,
@@ -390,6 +432,184 @@ class ReconAIAgent:
 
         return "\n".join(lines)
 
+    # ---- directory_bruteforce ---------------------------------------------
+
+    async def _try_path(self, client, base, path, sem):
+        async with sem:
+            try:
+                r = await client.get(base + path)
+                return (path, r.status_code, len(r.content),
+                        r.headers.get("location", ""))
+            except httpx.HTTPError:
+                return None
+
+    async def _run_dirbrute(self, base, paths, concurrency, timeout):
+        sem = asyncio.Semaphore(concurrency)
+        async with httpx.AsyncClient(
+            timeout=timeout, verify=False, follow_redirects=False,
+            headers={"User-Agent": "ai-agent-recon/0.1"}
+        ) as client:
+            tasks = [self._try_path(client, base, p, sem) for p in paths]
+            results = await asyncio.gather(*tasks)
+        return [r for r in results if r is not None]
+
+    def directory_bruteforce(self, url: str, paths: list | None = None,
+                             concurrency: int = 20,
+                             timeout: float = 10.0) -> str:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        if not url.endswith("/"):
+            url += "/"
+        paths = paths or DEFAULT_DIRECTORY_PATHS
+        interesting_codes = {200, 201, 204, 301, 302, 307, 401, 403, 500}
+
+        try:
+            results = asyncio.run(
+                self._run_dirbrute(url, paths, concurrency, timeout)
+            )
+        except Exception as e:
+            return f"Error: directory bruteforce failed: {e}"
+
+        interesting = [r for r in results if r[1] in interesting_codes]
+        lines = [f"Directory bruteforce for {url}",
+                 f"  Tested: {len(paths)} paths, concurrency={concurrency}",
+                 f"  Interesting responses: {len(interesting)}"]
+        if not interesting:
+            lines.append("  (no high-signal responses)")
+        else:
+            # Sort: 200s first (most interesting), then by code, then path
+            def sort_key(item):
+                code = item[1]
+                bucket = 0 if code == 200 else (1 if code < 400 else 2)
+                return (bucket, code, item[0])
+            for path, code, length, loc in sorted(interesting, key=sort_key):
+                line = f"    {code}  {length:>8} bytes  /{path}"
+                if loc:
+                    line += f"  -> {loc}"
+                lines.append(line)
+        return "\n".join(lines)
+
+    # ---- http_methods -----------------------------------------------------
+
+    def http_methods(self, url: str) -> str:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        methods_to_test = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE",
+                           "PATCH", "TRACE"]
+        risky = {"PUT", "DELETE", "PATCH", "TRACE"}
+
+        allowed_via_options: list[str] = []
+        per_method: dict[str, object] = {}
+
+        try:
+            with httpx.Client(
+                timeout=10.0, verify=False, follow_redirects=False,
+                headers={"User-Agent": "ai-agent-recon/0.1"}
+            ) as client:
+                for method in methods_to_test:
+                    try:
+                        r = client.request(method, url)
+                        per_method[method] = r.status_code
+                        if method == "OPTIONS":
+                            allow_hdr = r.headers.get("allow", "")
+                            allowed_via_options = [
+                                m.strip().upper()
+                                for m in allow_hdr.split(",") if m.strip()
+                            ]
+                    except httpx.HTTPError as e:
+                        per_method[method] = f"err: {type(e).__name__}"
+        except Exception as e:
+            return f"Error: HTTP methods test failed: {e}"
+
+        lines = [f"HTTP methods test for {url}"]
+        if allowed_via_options:
+            lines.append(
+                f"  OPTIONS Allow header: {', '.join(allowed_via_options)}"
+            )
+        else:
+            lines.append("  OPTIONS Allow header: (not present)")
+        lines.append("  Active probe results:")
+        for method in methods_to_test:
+            status = per_method.get(method, "?")
+            marker = ""
+            if isinstance(status, int) and status < 400:
+                marker = "  [RISKY]" if method in risky else "  [OK]"
+            lines.append(f"    {method:<8} {status}{marker}")
+        return "\n".join(lines)
+
+    # ---- vhost_discovery --------------------------------------------------
+
+    async def _try_vhost(self, client, target, host, sem):
+        async with sem:
+            try:
+                r = await client.get(target, headers={"Host": host})
+                return (host, r.status_code, len(r.content))
+            except httpx.HTTPError:
+                return None
+
+    async def _run_vhost(self, target, hosts, concurrency, timeout):
+        sem = asyncio.Semaphore(concurrency)
+        async with httpx.AsyncClient(
+            timeout=timeout, verify=False, follow_redirects=False,
+            headers={"User-Agent": "ai-agent-recon/0.1"}
+        ) as client:
+            tasks = [self._try_vhost(client, target, h, sem) for h in hosts]
+            return await asyncio.gather(*tasks)
+
+    def vhost_discovery(self, target: str, base_domain: str,
+                        hostnames: list | None = None,
+                        concurrency: int = 15,
+                        timeout: float = 8.0) -> str:
+        if not target.startswith(("http://", "https://")):
+            target = "https://" + target
+        base_domain = self._normalize_domain(base_domain)
+        prefixes = hostnames or DEFAULT_VHOST_PREFIXES
+        full_hosts = [f"{p}.{base_domain}" for p in prefixes]
+
+        # Establish a baseline with a deterministic bogus hostname
+        bogus = f"recon-bogus-{abs(hash(base_domain)) % 10000}.invalid"
+        try:
+            with httpx.Client(
+                timeout=timeout, verify=False, follow_redirects=False,
+                headers={"User-Agent": "ai-agent-recon/0.1"}
+            ) as client:
+                r = client.get(target, headers={"Host": bogus})
+                baseline_status = r.status_code
+                baseline_length = len(r.content)
+        except httpx.HTTPError as e:
+            return f"Error: baseline request failed: {e}"
+
+        try:
+            results = asyncio.run(
+                self._run_vhost(target, full_hosts, concurrency, timeout)
+            )
+        except Exception as e:
+            return f"Error: vhost scan failed: {e}"
+
+        # An anomaly = status differs OR content-length differs by >50 bytes
+        hits = []
+        for r in results:
+            if not r:
+                continue
+            host, status, length = r
+            if status != baseline_status or abs(length - baseline_length) > 50:
+                hits.append((host, status, length))
+
+        lines = [f"Virtual host discovery for {target}",
+                 f"  Base domain: {base_domain}",
+                 f"  Baseline (Host: {bogus}): "
+                 f"status={baseline_status}, {baseline_length} bytes",
+                 f"  Tested: {len(full_hosts)} vhosts",
+                 f"  Anomalies: {len(hits)}"]
+        for host, status, length in sorted(hits, key=lambda x: -x[2]):
+            lines.append(
+                f"    {host:<40}  status={status:<3}  {length} bytes"
+            )
+        return "\n".join(lines)
+
+    # ---- write_file -------------------------------------------------------
+
     def write_file(self, file_path: str, content: str) -> str:
         abs_work = os.path.abspath(self.working_directory)
         abs_file = os.path.abspath(os.path.join(self.working_directory, file_path))
@@ -425,6 +645,12 @@ class ReconAIAgent:
             return self.port_scan(**inputs)
         if name == "ssl_inspect":
             return self.ssl_inspect(**inputs)
+        if name == "directory_bruteforce":
+            return self.directory_bruteforce(**inputs)
+        if name == "http_methods":
+            return self.http_methods(**inputs)
+        if name == "vhost_discovery":
+            return self.vhost_discovery(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

@@ -32,10 +32,12 @@ def agent(tmp_path, monkeypatch):
 
 
 def test_tools_schema_loaded_from_json():
-    assert isinstance(tools, list) and len(tools) >= 7
+    assert isinstance(tools, list) and len(tools) >= 10
     names = {t["name"] for t in tools}
     expected = {"web_search", "whois_lookup", "dns_lookup", "subdomain_enum",
-                "http_fingerprint", "port_scan", "ssl_inspect", "write_file"}
+                "http_fingerprint", "port_scan", "ssl_inspect",
+                "directory_bruteforce", "http_methods", "vhost_discovery",
+                "write_file"}
     assert expected.issubset(names)
     for t in tools:
         assert "name" in t and "description" in t and "input_schema" in t
@@ -290,3 +292,139 @@ def test_write_file_rejects_path_traversal(agent):
     msg = agent.write_file("../../etc/evil", "x")
     assert msg.startswith("Error")
     assert "outside" in msg
+
+
+# ----------------------------- directory_bruteforce -------------------------
+
+
+def test_directory_bruteforce_filters_and_sorts(agent):
+    fake_results = [
+        ("admin", 200, 1234, ""),
+        (".env", 200, 50, ""),
+        ("nope", 404, 100, ""),       # filtered out
+        ("redir", 301, 0, "/login"),
+        ("forbidden", 403, 0, ""),
+        ("crash", 500, 0, ""),
+        ("not-tested", 418, 0, ""),   # filtered out (not in interesting set)
+    ]
+    with patch.object(ReconAIAgent, "_run_dirbrute", return_value=None), \
+         patch("recon.asyncio.run", return_value=fake_results):
+        out = agent.directory_bruteforce("example.com",
+                                         paths=["a", "b", "c"])
+
+    assert "https://example.com/" in out
+    # 5 results pass the interesting_codes filter (200/200/301/403/500)
+    assert "Interesting responses: 5" in out
+    assert "404" not in out
+    assert "418" not in out
+    # 200s should appear before 403/500 (bucket sort)
+    idx_200 = out.find("200 ")
+    idx_403 = out.find("403 ")
+    idx_500 = out.find("500 ")
+    assert idx_200 < idx_403 < idx_500
+    # Redirect Location preserved
+    assert "-> /login" in out
+
+
+def test_directory_bruteforce_no_hits(agent):
+    with patch.object(ReconAIAgent, "_run_dirbrute", return_value=None), \
+         patch("recon.asyncio.run", return_value=[]):
+        out = agent.directory_bruteforce("example.com")
+    assert "no high-signal responses" in out
+
+
+# ----------------------------- http_methods ---------------------------------
+
+
+def test_http_methods_flags_risky(agent):
+    """OPTIONS Allow header is read, and PUT/DELETE/PATCH returning <400 are flagged RISKY."""
+    responses = {
+        "GET":     MagicMock(status_code=200, headers={}),
+        "HEAD":    MagicMock(status_code=200, headers={}),
+        "OPTIONS": MagicMock(status_code=200,
+                             headers={"allow": "GET, HEAD, OPTIONS, PUT"}),
+        "PUT":     MagicMock(status_code=200, headers={}),
+        "DELETE":  MagicMock(status_code=405, headers={}),
+        "PATCH":   MagicMock(status_code=200, headers={}),
+        "TRACE":   MagicMock(status_code=405, headers={}),
+    }
+
+    def fake_request(method, url):
+        return responses[method]
+
+    fake_client = MagicMock()
+    fake_client.request.side_effect = fake_request
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
+
+    with patch("recon.httpx.Client", return_value=fake_client):
+        out = agent.http_methods("example.com")
+
+    assert "https://example.com" in out
+    # OPTIONS Allow header parsed
+    assert "GET, HEAD, OPTIONS, PUT" in out
+    # PUT returned 200 -> RISKY
+    assert "PUT      200  [RISKY]" in out
+    # DELETE returned 405 -> no marker
+    assert "DELETE   405" in out
+    # PATCH 200 -> RISKY
+    assert "PATCH    200  [RISKY]" in out
+
+
+def test_http_methods_no_allow_header(agent):
+    responses = {m: MagicMock(status_code=403, headers={})
+                 for m in ["GET", "HEAD", "OPTIONS", "PUT",
+                          "DELETE", "PATCH", "TRACE"]}
+    fake_client = MagicMock()
+    fake_client.request.side_effect = lambda m, u: responses[m]
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
+    with patch("recon.httpx.Client", return_value=fake_client):
+        out = agent.http_methods("example.com")
+    assert "(not present)" in out
+    assert "[RISKY]" not in out  # all 403 -> nothing flagged
+
+
+# ----------------------------- vhost_discovery -----------------------------
+
+
+def test_vhost_discovery_detects_anomaly(agent):
+    """Baseline returns 404 / 100 bytes. One vhost returns 200 / 500 bytes — should be flagged."""
+    baseline = MagicMock(status_code=404, content=b"x" * 100)
+
+    fake_baseline_client = MagicMock()
+    fake_baseline_client.get.return_value = baseline
+    fake_baseline_client.__enter__.return_value = fake_baseline_client
+    fake_baseline_client.__exit__.return_value = False
+
+    # asyncio.run returns the list of (host, status, length) tuples
+    fake_results = [
+        ("admin.example.com", 200, 500),      # anomaly
+        ("api.example.com",   404, 100),      # matches baseline
+        ("dev.example.com",   404, 130),      # length diff < 50, ignored
+        ("staging.example.com", 404, 200),    # length diff > 50, anomaly
+    ]
+
+    with patch("recon.httpx.Client", return_value=fake_baseline_client), \
+         patch.object(ReconAIAgent, "_run_vhost", return_value=None), \
+         patch("recon.asyncio.run", return_value=fake_results):
+        out = agent.vhost_discovery("https://1.2.3.4", "example.com",
+                                    hostnames=["admin", "api", "dev", "staging"])
+
+    assert "Anomalies: 2" in out
+    assert "admin.example.com" in out
+    assert "staging.example.com" in out
+    assert "api.example.com" not in out  # filtered (matches baseline exactly)
+
+
+def test_vhost_discovery_baseline_failure(agent):
+    fake_client = MagicMock()
+    fake_client.get.side_effect = __import__("httpx").HTTPError("connect fail")
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
+    # _run_vhost stubbed even though baseline aborts early — prevents
+    # the unused coroutine warning if the function ever changes
+    with patch.object(ReconAIAgent, "_run_vhost", return_value=None), \
+         patch("recon.httpx.Client", return_value=fake_client):
+        out = agent.vhost_discovery("https://1.2.3.4", "example.com")
+    assert "baseline request failed" in out
