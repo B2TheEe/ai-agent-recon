@@ -23,7 +23,7 @@ __pycache__/
 *.swp
 *.swo
 
-# Recon output (often contains sensitive target data)
+# Recon output (often contains sensitive target data; sample lives in examples/)
 output/
 
 # OS noise

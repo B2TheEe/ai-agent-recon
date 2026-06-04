@@ -1,5 +1,6 @@
 # ai-agent-recon
 
+[![tests](https://github.com/B2TheEe/ai-agent-recon/actions/workflows/tests.yml/badge.svg)](https://github.com/B2TheEe/ai-agent-recon/actions/workflows/tests.yml)
 [![smoke](https://github.com/B2TheEe/ai-agent-recon/actions/workflows/smoke.yml/badge.svg)](https://github.com/B2TheEe/ai-agent-recon/actions/workflows/smoke.yml)
 
 AI-powered reconnaissance agent. Give it a target company and Claude orchestrates a toolkit of passive + active recon utilities to produce a structured report.
@@ -13,6 +14,7 @@ AI-powered reconnaissance agent. Give it a target company and Claude orchestrate
 | `dns_lookup`        | passive | A/AAAA/MX/NS/TXT/SOA/CNAME (configurable) via `dnspython`                          |
 | `subdomain_enum`    | passive | Certificate transparency search via crt.sh                                         |
 | `http_fingerprint`  | passive | Status, security headers, redirect chain, cookies, tech-stack hints, page title    |
+| `ssl_inspect`       | passive | TLS cert subject/issuer/SANs/validity, negotiated version + cipher                 |
 | `port_scan`         | **ACTIVE** | Async TCP connect-scan + banner grab, nmap top-100 by default                   |
 | `write_file`        | local   | Sandboxed writes to `OUTPUT_DIR`                                                   |
 
@@ -53,7 +55,17 @@ SMOKE_DOMAIN=yourdomain.com SMOKE_SCAN_HOST=yourhost.com python smoke_test.py
 
 ## CI
 
-A weekly GitHub Actions workflow (`smoke.yml`) runs `smoke_test.py` every Monday and uploads the report as an artifact. Manual runs available via the Actions tab.
+Two GitHub Actions workflows:
+
+- **`tests.yml`** — fast offline pytest suite, runs on every push and PR (~1 sec)
+- **`smoke.yml`** — weekly live integration test against real endpoints, uploads report as artifact
+
+## Running tests locally
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
 
 ## Project layout
 
@@ -62,8 +74,11 @@ recon.py            ReconAIAgent + agent loop + tool implementations
 tools.json          Anthropic tool schemas (single source of truth)
 prompts.py          system prompt
 smoke_test.py       end-to-end tool integration check
+tests/              pytest unit tests (mocked, offline)
+examples/           sample recon report output
 requirements.txt    pinned deps
-.github/workflows/  CI
+requirements-dev.txt  dev deps (pytest)
+.github/workflows/  CI (tests.yml + smoke.yml)
 ```
 
 ## Disclaimer

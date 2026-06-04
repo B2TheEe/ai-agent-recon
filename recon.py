@@ -3,7 +3,9 @@ import json
 import os
 import re
 import socket
+import ssl
 import subprocess
+from datetime import datetime, timezone
 import anthropic
 import dns.resolver
 import httpx
@@ -316,6 +318,78 @@ class ReconAIAgent:
                 lines.append(line)
         return "\n".join(lines)
 
+    def ssl_inspect(self, host: str, port: int = 443) -> str:
+        host = self._normalize_domain(host)
+        ctx = ssl.create_default_context()
+        try:
+            with socket.create_connection((host, port), timeout=10) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    tls_version = ssock.version()
+                    cipher = ssock.cipher()  # (name, protocol, bits)
+        except (socket.gaierror, OSError, ssl.SSLError) as e:
+            return f"Error: TLS handshake with {host}:{port} failed: {e}"
+
+        def _flatten(name_tuples):
+            # Each tuple is a tuple of (key, value) pairs
+            return {k: v for entry in (name_tuples or ()) for k, v in entry}
+
+        subject = _flatten(cert.get("subject"))
+        issuer = _flatten(cert.get("issuer"))
+        sans = [v for k, v in cert.get("subjectAltName", []) if k == "DNS"]
+
+        # Validity parsing — stdlib gives "Mar 15 09:00:00 2025 GMT"
+        fmt = "%b %d %H:%M:%S %Y %Z"
+        try:
+            not_before = datetime.strptime(cert["notBefore"], fmt).replace(tzinfo=timezone.utc)
+            not_after = datetime.strptime(cert["notAfter"], fmt).replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            days_left = (not_after - now).days
+            expired = now > not_after
+            not_yet_valid = now < not_before
+        except (KeyError, ValueError):
+            not_before = not_after = None
+            days_left = None
+            expired = not_yet_valid = False
+
+        lines = [f"TLS certificate for {host}:{port}",
+                 f"  Negotiated: {tls_version} / {cipher[0] if cipher else 'unknown'}"
+                 + (f" ({cipher[2]} bits)" if cipher else "")]
+
+        if subject.get("commonName"):
+            lines.append(f"  Subject CN: {subject['commonName']}")
+        if subject.get("organizationName"):
+            lines.append(f"  Subject O:  {subject['organizationName']}")
+        if issuer.get("commonName"):
+            lines.append(f"  Issuer CN:  {issuer['commonName']}")
+        if issuer.get("organizationName"):
+            lines.append(f"  Issuer O:   {issuer['organizationName']}")
+
+        if not_before and not_after:
+            lines.append(f"  Valid from: {not_before.isoformat()}")
+            lines.append(f"  Valid to:   {not_after.isoformat()}")
+            if expired:
+                lines.append(f"  Status: EXPIRED ({-days_left} days ago)")
+            elif not_yet_valid:
+                lines.append(f"  Status: NOT YET VALID")
+            else:
+                warning = "  WARNING: expires soon" if days_left is not None and days_left < 30 else ""
+                lines.append(f"  Days remaining: {days_left}{warning}")
+
+        if cert.get("serialNumber"):
+            lines.append(f"  Serial: {cert['serialNumber']}")
+        if cert.get("version"):
+            lines.append(f"  Version: v{cert['version']}")
+
+        if sans:
+            lines.append(f"  SANs ({len(sans)}):")
+            for s in sans[:20]:
+                lines.append(f"    {s}")
+            if len(sans) > 20:
+                lines.append(f"    ... and {len(sans) - 20} more")
+
+        return "\n".join(lines)
+
     def write_file(self, file_path: str, content: str) -> str:
         abs_work = os.path.abspath(self.working_directory)
         abs_file = os.path.abspath(os.path.join(self.working_directory, file_path))
@@ -349,6 +423,8 @@ class ReconAIAgent:
             return self.http_fingerprint(**inputs)
         if name == "port_scan":
             return self.port_scan(**inputs)
+        if name == "ssl_inspect":
+            return self.ssl_inspect(**inputs)
         if name == "write_file":
             return self.write_file(**inputs)
         return f'Error: Unknown tool "{name}"'

@@ -55,6 +55,7 @@ def main() -> int:
     dns_out,   _, _ = timed("dns_lookup",         agent.dns_lookup, domain)
     sub_out,   _, _ = timed("subdomain_enum",     agent.subdomain_enum, domain, 25)
     http_out,  _, _ = timed("http_fingerprint",   agent.http_fingerprint, domain)
+    ssl_out,   _, _ = timed("ssl_inspect",        agent.ssl_inspect, domain)
     scan_out,  _, _ = timed("port_scan",          agent.port_scan, scan_host)
 
     # web_search is intentionally skipped: it hits a third-party (DDG) that
@@ -73,6 +74,7 @@ def main() -> int:
         + section("dns_lookup",       dns_out)
         + section("subdomain_enum",   sub_out)
         + section("http_fingerprint", http_out)
+        + section("ssl_inspect",      ssl_out)
         + section("port_scan",        scan_out)
     )
 

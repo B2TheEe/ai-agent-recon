@@ -110,6 +110,24 @@
         }
     },
     {
+        "name": "ssl_inspect",
+        "description": "Inspects the TLS certificate of a host:port. Returns subject, issuer, SANs, validity window, days remaining, signature algorithm, key size, and negotiated TLS version/cipher. Passive — single TLS handshake, no scanning.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Hostname to connect to (SNI). Bare domain, no scheme."
+                },
+                "port": {
+                    "type": "integer",
+                    "description": "TLS port (default 443)"
+                }
+            },
+            "required": ["host"]
+        }
+    },
+    {
         "name": "write_file",
         "description": "Writes content to a file in the output directory.",
         "input_schema": {
