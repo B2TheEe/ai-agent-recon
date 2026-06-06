@@ -155,7 +155,26 @@ class ReconAIAgent(
                     "content": tool_results,
                 })
 
-        return "Max iterations reached without a final answer."
+        print("\n[Max iterations reached — forcing final summary]")
+        messages.append({
+            "role": "user",
+            "content": (
+                "Max tool iterations reached. Based on all findings gathered "
+                "above, write a complete structured markdown reconnaissance "
+                "report now. Do not call any more tools."
+            ),
+        })
+        summary = self.client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4096,
+            system=system_prompt,
+            messages=messages,
+        )
+        final_answer = "".join(
+            block.text for block in summary.content if hasattr(block, "text")
+        )
+        print(f"\nFinal Answer: {final_answer}")
+        return final_answer
 
 
 if __name__ == "__main__":
