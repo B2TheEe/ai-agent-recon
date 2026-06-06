@@ -162,4 +162,14 @@ if __name__ == "__main__":
     agent = ReconAIAgent()
     query = input("On which company would you like to perform "
                   "reconnaissance? ")
-    agent.run_agent(user_query=query, max_iterations=10)
+    result = agent.run_agent(user_query=query, max_iterations=15)
+
+    if result:
+        company_slug = re.sub(r"[^\w]", "_", query.strip().lower())[:40]
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        filename = f"recon_{company_slug}_{timestamp}.md"
+        filepath = os.path.join(agent.working_directory, filename)
+        os.makedirs(agent.working_directory, exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(result)
+        print(f"\nReport saved: {filepath}")
