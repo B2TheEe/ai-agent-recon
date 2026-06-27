@@ -10,6 +10,18 @@ python recon.py
 
 Requires `.env` with `ANTHROPIC_API_KEY`. Optionally set `OUTPUT_DIR` for report output path.
 
+### Smoke test (no LLM, no API key)
+
+`smoke_test.py` exercises every tool in sequence against a permitted target and writes a markdown report. Three modes via mutually-exclusive flags:
+
+```bash
+python smoke_test.py            # --all (default): passive + active, ~13s
+python smoke_test.py --passive  # 6 passive tools, ~5s, no scanner footprint
+python smoke_test.py --active   # 5 active tools, permitted targets only
+```
+
+Override targets with `SMOKE_DOMAIN` and `SMOKE_SCAN_HOST` env vars. Each tool runs through a content assertion (statuses OK / BAD / ERR) and the process exit code is non-zero if any tool fails — silent soft-fails like `Error: crt.sh returned HTTP 404` no longer pass as green.
+
 ## Dependencies
 
 ```bash
@@ -49,7 +61,7 @@ The mixin layout lets pytest patch `recon.httpx.get`, `recon.socket.gethostbynam
 - `web_search(query)` — DuckDuckGo top-5 results via `ddgs`.
 - `whois_lookup(domain)` — Primary: `python-whois`. Fallback: system `whois` CLI. Normalizes URLs (strips scheme/path) before lookup.
 - `dns_lookup(domain, record_types=None)` — Active DNS enumeration via `dnspython`. Defaults to A/AAAA/MX/NS/TXT/SOA/CNAME; per-record-type errors (timeout, no answer) don't abort the whole lookup. NXDOMAIN returns early.
-- `subdomain_enum(domain, limit=100)` — Passive subdomain discovery via crt.sh certificate transparency logs (no traffic to target). Deduplicates and sorts results.
+- `subdomain_enum(domain, limit=100)` — Passive subdomain discovery via Certificate Transparency logs (no traffic to target). Primary source crt.sh with one retry on 404/429/5xx; automatic fallback to certspotter when crt.sh stays down. Output names the source used and lists every source tried, so the path that produced the answer is auditable. Deduplicates and sorts results.
 - `http_fingerprint(target)` — HTTP banner grab via `httpx`: status, final URL after redirects, redirect chain, security headers, cookies, naive tech-stack hints (PHP / ASP.NET / Laravel / Rails / nginx / IIS / Cloudflare), and page title.
 - `port_scan(host, ports=None, timeout=1.5, concurrency=200, banner=True)` — **ACTIVE** TCP port scan via `asyncio.open_connection`. Defaults to nmap top-100 TCP ports. Reads a tiny banner from open ports when services speak first (SSH/FTP/SMTP). Resolves hostnames before scanning so the actual scanned IP is reported. Permission required — see ethical note below.
 - `directory_bruteforce(url, paths=None, concurrency=20, timeout=10)` — **ACTIVE** async HTTP path enumeration. Builtin wordlist ~60 high-value paths (dotfiles, admin panels, .git, swagger, etc.). Filters to interesting status codes (200/201/204/301/302/307/401/403/500), sorts 200s first.

@@ -12,7 +12,7 @@ AI-powered reconnaissance agent. Give it a target company and Claude orchestrate
 | `web_search`        | passive | DuckDuckGo top-5 results via `ddgs`                                                |
 | `whois_lookup`      | passive | Registrar, dates, nameservers, registrant — `python-whois` + system `whois` fallback |
 | `dns_lookup`        | passive | A/AAAA/MX/NS/TXT/SOA/CNAME (configurable) via `dnspython`                          |
-| `subdomain_enum`    | passive | Certificate transparency search via crt.sh                                         |
+| `subdomain_enum`    | passive | Certificate Transparency search via crt.sh, with automatic retry + certspotter fallback |
 | `http_fingerprint`  | passive | Status, security headers, redirect chain, cookies, tech-stack hints, page title    |
 | `ssl_inspect`       | passive | TLS cert subject/issuer/SANs/validity, negotiated version + cipher                 |
 | `port_scan`            | **ACTIVE** | Async TCP connect-scan + banner grab, nmap top-100 by default                |
@@ -54,10 +54,23 @@ python recon.py
 Run the tool-layer smoke test (no LLM, no API key needed):
 
 ```bash
-python smoke_test.py
-# or with custom targets you control:
+python smoke_test.py            # --all  (default): every tool, ~13s
+python smoke_test.py --passive  # passive / query-only subset, no scanner footprint
+python smoke_test.py --active   # active tools only (requires permission)
+
+# Custom targets you control:
 SMOKE_DOMAIN=yourdomain.com SMOKE_SCAN_HOST=yourhost.com python smoke_test.py
 ```
+
+Smoke modes:
+
+| Mode        | Tools run                                                                           | Target          | When to use                          |
+|-------------|-------------------------------------------------------------------------------------|-----------------|--------------------------------------|
+| `--passive` | whois, dns, subdomain_enum, http_fingerprint, ssl_inspect, cve_lookup               | `SMOKE_DOMAIN`  | CI on every push; restricted networks |
+| `--active`  | port_scan, directory_bruteforce, http_methods, vhost_discovery, service_version_probe | `SMOKE_SCAN_HOST` | Permitted targets only (scanme.nmap.org by default) |
+| `--all`     | passive + active                                                                    | both            | Local sanity check                   |
+
+Each tool has a content assertion — exit code is **non-zero** if any tool either raises *or* returns a soft `Error: ...` payload, so silent regressions don't pass as green.
 
 ## CI
 
