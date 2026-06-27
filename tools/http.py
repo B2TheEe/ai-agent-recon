@@ -306,27 +306,45 @@ class HttpMixin(DomainNormalizerMixin):
                         hostnames: list | None = None,
                         concurrency: int = 15,
                         timeout: float = 8.0) -> str:
-        if not target.startswith(("http://", "https://")):
-            target = "https://" + target
+        # If the caller passed a bare hostname, try https first then http.
+        if target.startswith(("http://", "https://")):
+            candidates = [target]
+        else:
+            candidates = [f"https://{target}", f"http://{target}"]
+
         base_domain = self._normalize_domain(base_domain)
         prefixes = hostnames or DEFAULT_VHOST_PREFIXES
         full_hosts = [f"{p}.{base_domain}" for p in prefixes]
 
         bogus = f"recon-bogus-{abs(hash(base_domain)) % 10000}.invalid"
-        try:
-            with httpx.Client(
-                timeout=timeout, verify=False, follow_redirects=False,
-                headers={"User-Agent": "ai-agent-recon/0.1"}
-            ) as client:
-                r = client.get(target, headers={"Host": bogus})
-                baseline_status = r.status_code
-                baseline_length = len(r.content)
-        except httpx.HTTPError as e:
-            return f"Error: baseline request failed: {e}"
+
+        chosen_target = None
+        baseline_status = None
+        baseline_length = None
+        attempt_errors: list[str] = []
+
+        for cand in candidates:
+            try:
+                with httpx.Client(
+                    timeout=timeout, verify=False, follow_redirects=False,
+                    headers={"User-Agent": "ai-agent-recon/0.1"}
+                ) as client:
+                    r = client.get(cand, headers={"Host": bogus})
+                    baseline_status = r.status_code
+                    baseline_length = len(r.content)
+                    chosen_target = cand
+                    break
+            except httpx.HTTPError as e:
+                attempt_errors.append(f"{cand}: {type(e).__name__}: {e}")
+
+        if chosen_target is None:
+            return ("Error: baseline request failed on all candidate schemes:\n  "
+                    + "\n  ".join(attempt_errors))
+        assert baseline_status is not None and baseline_length is not None
 
         try:
             results = asyncio.run(
-                self._run_vhost(target, full_hosts, concurrency, timeout)
+                self._run_vhost(chosen_target, full_hosts, concurrency, timeout)
             )
         except Exception as e:
             return f"Error: vhost scan failed: {e}"
@@ -340,12 +358,15 @@ class HttpMixin(DomainNormalizerMixin):
                     or abs(length - baseline_length) > 50):
                 hits.append((host, status, length))
 
-        lines = [f"Virtual host discovery for {target}",
+        lines = [f"Virtual host discovery for {chosen_target}",
                  f"  Base domain: {base_domain}",
                  f"  Baseline (Host: {bogus}): "
                  f"status={baseline_status}, {baseline_length} bytes",
                  f"  Tested: {len(full_hosts)} vhosts",
                  f"  Anomalies: {len(hits)}"]
+        if len(candidates) > 1 and chosen_target != candidates[0]:
+            lines.insert(1, f"  Note: fell back to {chosen_target} "
+                            f"after {candidates[0]} failed baseline")
         for host, status, length in sorted(hits, key=lambda x: -x[2]):
             lines.append(
                 f"    {host:<40}  status={status:<3}  {length} bytes"
