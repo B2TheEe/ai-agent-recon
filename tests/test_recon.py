@@ -172,9 +172,81 @@ def test_subdomain_enum_parses_crtsh(agent):
 
 def test_subdomain_enum_handles_http_error(agent):
     fake_response = MagicMock(status_code=503)
-    with patch("recon.httpx.get", return_value=fake_response):
+    with patch("recon.httpx.get", return_value=fake_response), \
+         patch("recon.time.sleep"):
         out = agent.subdomain_enum("example.com")
     assert "503" in out
+
+
+# --- new: retry + certspotter fallback ---
+
+def test_subdomain_enum_retries_crtsh_on_transient(agent):
+    """crt.sh 404 on first try should retry once and recover."""
+    fail = MagicMock(status_code=404)
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = [{"name_value": "api.example.com"}]
+    # Sequence: fail, then succeed on retry.
+    with patch("recon.httpx.get", side_effect=[fail, ok]) as gget, \
+         patch("recon.time.sleep") as sleep:
+        out = agent.subdomain_enum("example.com")
+    assert gget.call_count == 2
+    sleep.assert_called()  # backoff between attempts
+    assert "api.example.com" in out
+    assert "(crt.sh)" in out  # primary source still wins
+    assert "Sources tried: crt.sh" in out
+
+
+def test_subdomain_enum_falls_back_to_certspotter(agent):
+    """crt.sh keeps failing → certspotter takes over and provides results."""
+    crtsh_fail = MagicMock(status_code=429)  # rate-limited both attempts
+    certspotter_ok = MagicMock(status_code=200)
+    certspotter_ok.json.return_value = [
+        {"dns_names": ["www.example.com", "*.example.com"]},
+        {"dns_names": ["api.example.com"]},
+    ]
+    # crt.sh: 2 attempts fail, then certspotter: 1 attempt succeeds.
+    with patch("recon.httpx.get",
+               side_effect=[crtsh_fail, crtsh_fail, certspotter_ok]) as gget, \
+         patch("recon.time.sleep"):
+        out = agent.subdomain_enum("example.com")
+    assert gget.call_count == 3
+    assert "certspotter" in out
+    assert "Sources tried: crt.sh, certspotter" in out
+    assert "api.example.com" in out
+    assert "www.example.com" in out
+    # Failure notes from crt.sh should be surfaced when fallback wins.
+    assert "Notes:" in out
+    assert "crt.sh" in out
+
+
+def test_subdomain_enum_all_sources_fail(agent):
+    """Both crt.sh (2 attempts) and certspotter fail → single Error: output."""
+    all_fail = MagicMock(status_code=500)
+    with patch("recon.httpx.get", return_value=all_fail), \
+         patch("recon.time.sleep"):
+        out = agent.subdomain_enum("example.com")
+    # Smoke-test assertion contract: starts with "Error:"
+    assert out.lstrip().startswith("Error: all CT sources failed")
+    assert "crt.sh" in out
+    assert "certspotter" in out
+
+
+def test_certspotter_parser_extracts_dns_names(agent):
+    """Certspotter parser handles the dns_names list shape correctly."""
+    fake = MagicMock(status_code=200)
+    fake.json.return_value = [
+        {"dns_names": ["a.example.com", "b.example.com"]},
+        {"dns_names": ["*.example.com", "API.EXAMPLE.COM"]},  # wildcard + case
+        {"dns_names": ["other.unrelated.org"]},               # out-of-scope
+    ]
+    with patch("recon.httpx.get", return_value=fake):
+        subs, err = agent._query_certspotter("example.com")
+    assert err is None
+    assert "a.example.com" in subs
+    assert "b.example.com" in subs
+    assert "example.com" in subs           # apex from wildcard
+    assert "api.example.com" in subs       # lower-cased
+    assert "other.unrelated.org" not in subs
 
 
 # ----------------------------- http_fingerprint -----------------------------
